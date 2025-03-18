@@ -16,6 +16,7 @@ app.use(express.json({ extended: false }));
 // Define routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/brackets', require('./routes/brackets'));
+app.use('/api/updates', require('./routes/updates')); // Add the new updates route
 
 // Basic route
 app.get('/', (req, res) => {

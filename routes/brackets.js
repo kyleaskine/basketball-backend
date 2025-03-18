@@ -183,4 +183,34 @@ router.put('/:id/score', auth, async (req, res) => {
   }
 });
 
+router.get('/user/:email', async (req, res) => {
+    const { email } = req.params;
+    const { userToken } = req.query;
+    
+    if (!email || !userToken) {
+      return res.status(400).json({ msg: 'Email and userToken are required' });
+    }
+    
+    try {
+      // Verify the userToken belongs to this user
+      const user = await User.findOne({ email });
+      
+      if (!user) {
+        return res.status(404).json({ msg: 'User not found' });
+      }
+      
+      if (user.userToken !== userToken) {
+        return res.status(401).json({ msg: 'Invalid user token' });
+      }
+      
+      // Get all brackets for this email
+      const brackets = await Bracket.find({ userEmail: email });
+      
+      res.json(brackets);
+    } catch (err) {
+      console.error(err.message);
+      res.status(500).send('Server error');
+    }
+  });
+
 module.exports = router;
