@@ -11,22 +11,34 @@ module.exports = async function(req, res, next) {
   }
 
   try {
-    // TEMPORARY: Try to find user by userToken instead of verifying JWT
-    const user = await User.findOne({ userToken: token });
+    // First try JWT verification
+    let userData;
+    let user;
     
-    if (user) {
-      req.user = user;
-      return next();
+    try {
+      // Verify token with JWT
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      userData = decoded.user;
+      
+      // Find the user by id from JWT
+      user = await User.findById(userData.id);
+    } catch (jwtError) {
+      // If JWT verification fails, try finding by userToken
+      // This is our fallback for development or if using the userToken directly
+      user = await User.findOne({ userToken: token });
+      
+      if (!user) {
+        // If we still can't find a user, throw original error
+        throw jwtError;
+      }
     }
     
-    // Original JWT verification as fallback
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    user = await User.findById(decoded.user.id);
-    
+    // If user not found
     if (!user) {
       return res.status(401).json({ msg: 'User not found' });
     }
     
+    // Set user data on request
     req.user = user;
     next();
   } catch (err) {

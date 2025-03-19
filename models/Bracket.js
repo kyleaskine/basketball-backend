@@ -22,6 +22,10 @@ const BracketSchema = new mongoose.Schema({
     required: true,
     unique: true
   },
+  entryNumber: {
+    type: Number,
+    default: 1
+  },
   createdAt: {
     type: Date,
     default: Date.now

@@ -4,6 +4,7 @@ const { v4: uuidv4 } = require('uuid');
 const auth = require('../middleware/auth');
 const Bracket = require('../models/Bracket');
 const User = require('../models/User');
+const { sendBracketConfirmation } = require('../utils/email');
 
 // @route   POST api/brackets
 // @desc    Create a new bracket
@@ -15,17 +16,52 @@ router.post('/', async (req, res) => {
     // Create unique edit token
     const editToken = uuidv4();
 
+    // Calculate the entry number by counting existing entries with the same name and email
+    const firstName = participantName.split(' ')[0] || '';
+    const lastName = participantName.split(' ').slice(1).join(' ') || '';
+    
+    // Count existing brackets with the same name and email
+    const existingBrackets = await Bracket.find({ 
+      userEmail: userEmail,
+      participantName: participantName
+    }).sort({ entryNumber: 1 });
+    
+    // Calculate the next entry number
+    const entryNumber = existingBrackets.length > 0 ? existingBrackets.length + 1 : 1;
+
     const newBracket = new Bracket({
       userEmail,
       participantName,
       contact,
       editToken,
+      entryNumber,
       picks,
       score: 0,
       isLocked: false
     });
 
     const bracket = await newBracket.save();
+    
+    // Get user data to include userToken in email
+    const user = await User.findOne({ email: userEmail });
+    const userToken = user ? user.userToken : null;
+    
+    // Send confirmation email
+    try {
+      const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      await sendBracketConfirmation(userEmail, {
+        bracketId: bracket._id,
+        editToken: bracket.editToken,
+        participantName: bracket.participantName,
+        userToken,
+        entryNumber: bracket.entryNumber,
+        totalEntries: entryNumber
+      }, baseUrl);
+    } catch (emailError) {
+      console.error('Error sending confirmation email:', emailError);
+      // Don't fail the request if email sending fails
+    }
+    
     res.json(bracket);
   } catch (err) {
     console.error(err.message);
@@ -65,7 +101,17 @@ router.get('/:id', async (req, res) => {
       return res.status(401).json({ msg: 'Not authorized to view this bracket' });
     }
 
-    res.json(bracket);
+    // Count total entries for this user with same name
+    const totalEntries = await Bracket.countDocuments({
+      userEmail: bracket.userEmail,
+      participantName: bracket.participantName
+    });
+
+    // Add totalEntries to the response
+    const bracketResponse = bracket.toObject();
+    bracketResponse.totalEntries = totalEntries;
+    
+    res.json(bracketResponse);
   } catch (err) {
     console.error(err.message);
     if (err.kind === 'ObjectId') {
@@ -107,7 +153,18 @@ router.put('/:id', async (req, res) => {
     if (picks) bracket.picks = picks;
 
     await bracket.save();
-    res.json(bracket);
+    
+    // Count total entries for this user with same name
+    const totalEntries = await Bracket.countDocuments({
+      userEmail: bracket.userEmail,
+      participantName: bracket.participantName
+    });
+
+    // Add totalEntries to the response
+    const bracketResponse = bracket.toObject();
+    bracketResponse.totalEntries = totalEntries;
+    
+    res.json(bracketResponse);
   } catch (err) {
     console.error(err.message);
     if (err.kind === 'ObjectId') {
@@ -206,7 +263,28 @@ router.get('/user/:email', async (req, res) => {
       // Get all brackets for this email
       const brackets = await Bracket.find({ userEmail: email });
       
-      res.json(brackets);
+      // Enhance bracket data with participant entry counts
+      const enhancedBrackets = [];
+      const participantCounts = {};
+      
+      // First pass: count entries per participant
+      for (const bracket of brackets) {
+        const participantName = bracket.participantName;
+        if (!participantCounts[participantName]) {
+          participantCounts[participantName] = 1;
+        } else {
+          participantCounts[participantName]++;
+        }
+      }
+      
+      // Second pass: enhance brackets with total entries
+      for (const bracket of brackets) {
+        const bracketObj = bracket.toObject();
+        bracketObj.totalEntries = participantCounts[bracket.participantName];
+        enhancedBrackets.push(bracketObj);
+      }
+      
+      res.json(enhancedBrackets);
     } catch (err) {
       console.error(err.message);
       res.status(500).send('Server error');
