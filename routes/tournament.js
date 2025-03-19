@@ -128,84 +128,87 @@ router.post('/results', [auth, admin], async (req, res) => {
 // @desc    Calculate scores for all brackets based on tournament results
 // @access  Private (admin only)
 router.post('/calculate-scores', [auth, admin], async (req, res) => {
-  try {
-    // Get tournament results
-    const tournament = await TournamentResults.findOne({ 
-      year: new Date().getFullYear() 
-    });
-    
-    if (!tournament || !tournament.results) {
-      return res.status(400).json({ 
-        msg: 'No tournament results available for scoring' 
+    try {
+      // Get tournament results
+      const tournament = await TournamentResults.findOne({ 
+        year: new Date().getFullYear() 
       });
-    }
-    
-    // Get all brackets
-    const brackets = await Bracket.find();
-    
-    // Results counter
-    let updated = 0;
-    let errors = 0;
-    
-    // Loop through each bracket and calculate score
-    for (const bracket of brackets) {
-      try {
-        // Initialize score
-        let score = 0;
-        
-        // Go through each completed round
-        for (const round of tournament.completedRounds) {
-          // Get matchups for this round from tournament results
-          const tournamentMatchups = tournament.results[round];
+      
+      if (!tournament || !tournament.results) {
+        return res.status(400).json({ 
+          msg: 'No tournament results available for scoring' 
+        });
+      }
+      
+      // Get all brackets
+      const brackets = await Bracket.find();
+      
+      // Results counter
+      let updated = 0;
+      let errors = 0;
+      
+      // Loop through each bracket and calculate score
+      for (const bracket of brackets) {
+        try {
+          // Initialize score
+          let score = 0;
           
-          // Get matchups for this round from bracket
-          const bracketMatchups = bracket.picks[round];
-          
-          if (!tournamentMatchups || !bracketMatchups) continue;
-          
-          // Check each matchup in the round
-          for (const tournamentMatchup of tournamentMatchups) {
-            // Find corresponding bracket matchup
-            const bracketMatchup = bracketMatchups.find(
-              m => m.id === tournamentMatchup.id
-            );
+          // Process each round
+          for (let round = 1; round <= 6; round++) {
+            // Get matchups for this round from tournament results
+            const tournamentMatchups = tournament.results[round];
             
-            if (!bracketMatchup || !bracketMatchup.winner || !tournamentMatchup.winner) {
-              continue;
-            }
+            // Get matchups for this round from bracket
+            const bracketMatchups = bracket.picks[round];
             
-            // Check if the winner matches
-            if (
-              bracketMatchup.winner.name === tournamentMatchup.winner.name &&
-              bracketMatchup.winner.seed === tournamentMatchup.winner.seed
-            ) {
-              // Add points based on the round
-              score += tournament.scoringConfig[round];
+            if (!tournamentMatchups || !bracketMatchups) continue;
+            
+            // Check each matchup in the round
+            for (const tournamentMatchup of tournamentMatchups) {
+              // Skip if tournament matchup doesn't have a winner yet
+              if (!tournamentMatchup.winner) continue;
+              
+              // Find corresponding bracket matchup
+              const bracketMatchup = bracketMatchups.find(
+                m => m.id === tournamentMatchup.id
+              );
+              
+              if (!bracketMatchup || !bracketMatchup.winner) {
+                continue;
+              }
+              
+              // Check if the winner matches
+              if (
+                bracketMatchup.winner.name === tournamentMatchup.winner.name &&
+                bracketMatchup.winner.seed === tournamentMatchup.winner.seed
+              ) {
+                // Add points based on the round
+                score += tournament.scoringConfig[round];
+              }
             }
           }
+          
+          // Update bracket score
+          bracket.score = score;
+          await bracket.save();
+          updated++;
+        } catch (err) {
+          console.error(`Error calculating score for bracket ${bracket._id}:`, err);
+          errors++;
         }
-        
-        // Update bracket score
-        bracket.score = score;
-        await bracket.save();
-        updated++;
-      } catch (err) {
-        console.error(`Error calculating score for bracket ${bracket._id}:`, err);
-        errors++;
       }
+      
+      res.json({
+        msg: `Scores calculated: ${updated} brackets updated, ${errors} errors`,
+        success: true,
+        updated,
+        errors
+      });
+    } catch (err) {
+      console.error('Error calculating scores:', err.message);
+      res.status(500).send('Server error');
     }
-    
-    res.json({
-      msg: `Scores calculated: ${updated} brackets updated, ${errors} errors`,
-      success: true,
-      updated,
-      errors
-    });
-  } catch (err) {
-    console.error('Error calculating scores:', err.message);
-    res.status(500).send('Server error');
-  }
-});
+  });
 
 // @route   PUT api/tournament/lock-brackets
 // @desc    Lock all brackets (when tournament starts)
@@ -243,66 +246,140 @@ router.put('/unlock-brackets', [auth, admin], async (req, res) => {
     }
   });
 
+
+// @route   GET api/tournament/status
+// @desc    Get tournament lock status
+// @access  Public
+router.get('/status', async (req, res) => {
+    try {
+      // First check if any brackets are locked
+      const bracketCount = await Bracket.countDocuments();
+      if (bracketCount === 0) {
+        // If no brackets exist yet, tournament is not locked
+        return res.json({ isLocked: false });
+      }
+      
+      // Check if brackets are locked by checking one bracket
+      const sampleBracket = await Bracket.findOne();
+      return res.json({ isLocked: sampleBracket.isLocked });
+    } catch (err) {
+      console.error('Error checking tournament status:', err);
+      res.status(500).send('Server error');
+    }
+  });
+
 // @route   PUT api/tournament/games/:id
 // @desc    Update a specific game result
 // @access  Private (admin only)
 router.put('/games/:id', [auth, admin], async (req, res) => {
-  const { winner, score, completed } = req.body;
-  const matchupId = parseInt(req.params.id);
-  
-  if (!matchupId) {
-    return res.status(400).json({ msg: 'Valid matchup ID is required' });
-  }
-  
-  try {
-    // Get tournament results
-    let tournament = await TournamentResults.findOne({ 
-      year: new Date().getFullYear() 
-    });
+    const { winner, score, completed } = req.body;
+    const matchupId = parseInt(req.params.id);
+    const autoCalculateScores = req.query.calculateScores === 'true';
     
-    if (!tournament) {
-      return res.status(404).json({ msg: 'Tournament results not found' });
+    // Fix for handling ID 0 - check if it's a number instead of truthy/falsy check
+    if (isNaN(matchupId) || matchupId < 0) {
+      return res.status(400).json({ msg: 'Valid matchup ID is required' });
     }
     
-    // Find the game in the tournament results
-    const gameIndex = tournament.games.findIndex(g => g.matchupId === matchupId);
-    
-    if (gameIndex === -1) {
-      return res.status(404).json({ msg: 'Game not found' });
-    }
-    
-    // Update the game
-    if (winner) tournament.games[gameIndex].winner = winner;
-    if (score) tournament.games[gameIndex].score = score;
-    if (completed !== undefined) tournament.games[gameIndex].completed = completed;
-    
-    // If marking as completed, set playedAt date
-    if (completed) {
-      tournament.games[gameIndex].playedAt = Date.now();
-    }
-    
-    // Also update the main results object
-    for (const round in tournament.results) {
-      const matchupIndex = tournament.results[round].findIndex(
-        m => m.id === matchupId
-      );
+    try {
+      // Get tournament results
+      let tournament = await TournamentResults.findOne({ 
+        year: new Date().getFullYear() 
+      });
       
-      if (matchupIndex !== -1) {
-        if (winner) tournament.results[round][matchupIndex].winner = winner;
-        break;
+      if (!tournament) {
+        return res.status(404).json({ msg: 'Tournament results not found' });
       }
+      
+      // Find the game in the tournament results
+      const gameIndex = tournament.games.findIndex(g => g.matchupId === matchupId);
+      
+      if (gameIndex === -1) {
+        return res.status(404).json({ msg: 'Game not found' });
+      }
+      
+      // Update the game
+      if (winner) tournament.games[gameIndex].winner = winner;
+      if (score) tournament.games[gameIndex].score = score;
+      if (completed !== undefined) tournament.games[gameIndex].completed = completed;
+      
+      // If marking as completed, set playedAt date
+      if (completed) {
+        tournament.games[gameIndex].playedAt = Date.now();
+      }
+      
+      // Also update the main results object
+      for (const round in tournament.results) {
+        const matchupIndex = tournament.results[round].findIndex(
+          m => m.id === matchupId
+        );
+        
+        if (matchupIndex !== -1) {
+          if (winner) tournament.results[round][matchupIndex].winner = winner;
+          break;
+        }
+      }
+      
+      // Update lastUpdated timestamp
+      tournament.lastUpdated = Date.now();
+      
+      await tournament.save();
+      
+      // Auto-calculate scores if requested
+      if (autoCalculateScores && completed && winner) {
+        // This is a simplified version of the score calculation logic
+        // to update scores based on this specific game result
+        const brackets = await Bracket.find();
+        let updatedBrackets = 0;
+        
+        for (const bracket of brackets) {
+          try {
+            // Find the round for this matchup
+            let matchupRound = null;
+            for (const round in tournament.results) {
+              if (tournament.results[round].some(m => m.id === matchupId)) {
+                matchupRound = parseInt(round);
+                break;
+              }
+            }
+            
+            if (!matchupRound) continue;
+            
+            // Get the matchup from the bracket
+            const bracketMatchups = bracket.picks[matchupRound];
+            if (!bracketMatchups) continue;
+            
+            const bracketMatchup = bracketMatchups.find(m => m.id === matchupId);
+            if (!bracketMatchup || !bracketMatchup.winner) continue;
+            
+            // Check if the pick matches the result
+            const correctPick = 
+              bracketMatchup.winner.name === winner.name && 
+              bracketMatchup.winner.seed === winner.seed;
+            
+            // Update score if correct
+            if (correctPick) {
+              bracket.score += tournament.scoringConfig[matchupRound];
+              await bracket.save();
+              updatedBrackets++;
+            }
+          } catch (err) {
+            console.error(`Error updating score for bracket ${bracket._id}:`, err);
+          }
+        }
+        
+        return res.json({ 
+          tournament,
+          scoresUpdated: true,
+          bracketsUpdated: updatedBrackets
+        });
+      }
+      
+      res.json(tournament);
+    } catch (err) {
+      console.error(err.message);
+      res.status(500).send('Server error');
     }
-    
-    // Update lastUpdated timestamp
-    tournament.lastUpdated = Date.now();
-    
-    await tournament.save();
-    
-    res.json(tournament);
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server error');
-  }
-});
+  });
 
 module.exports = router;
