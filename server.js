@@ -16,7 +16,9 @@ app.use(express.json({ extended: false }));
 // Define routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/brackets', require('./routes/brackets'));
-app.use('/api/updates', require('./routes/updates')); // Add the new updates route
+app.use('/api/updates', require('./routes/updates'));
+app.use('/api/admin', require('./routes/admin'));
+app.use('/api/tournament', require('./routes/tournament'));
 
 // Basic route
 app.get('/', (req, res) => {
