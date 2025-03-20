@@ -9,27 +9,33 @@ const Bracket = require("../models/Bracket");
 // @desc    Get tournament results
 // @access  Public
 router.get("/results", async (req, res) => {
-  try {
-    // Get the current year's tournament results, or create if it doesn't exist
-    let results = await TournamentResults.findOne({
-      year: new Date().getFullYear(),
-    });
-
-    if (!results) {
-      // Return empty results if none exist yet
-      return res.json({
-        results: null,
-        completedRounds: [],
-        games: [],
+    try {
+      // Get the current year's tournament results, or create if it doesn't exist
+      let results = await TournamentResults.findOne({
+        year: new Date().getFullYear(),
       });
+  
+      if (!results) {
+        // Return empty results if none exist yet
+        return res.json({
+          results: null,
+          completedRounds: [],
+          games: [],
+          teams: {},  // Add empty teams object
+        });
+      }
+  
+      // Make sure to include teams in the response even if it's empty
+      if (!results.teams) {
+        results.teams = {};
+      }
+  
+      res.json(results);
+    } catch (err) {
+      console.error(err.message);
+      res.status(500).send("Server error");
     }
-
-    res.json(results);
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send("Server error");
-  }
-});
+  });
 
 // @route   GET api/tournament/standings
 // @desc    Get bracket standings
@@ -111,6 +117,7 @@ router.post("/results", [auth, admin], async (req, res) => {
       tournament.lastUpdated = Date.now();
       tournament.markModified("results");
       tournament.markModified("games");
+      tournament.markModified("teams");
       await tournament.save();
     } else {
       // Create new tournament results
@@ -122,6 +129,7 @@ router.post("/results", [auth, admin], async (req, res) => {
       });
       tournament.markModified("results");
       tournament.markModified("games");
+      tournament.markModified("teams");
       await tournament.save();
     }
 
@@ -310,6 +318,10 @@ router.put("/games/:id", [auth, admin], async (req, res) => {
       return res.status(404).json({ msg: "Game not found" });
     }
 
+    // Get current game and previous winner (if any)
+    const currentGame = tournament.games[gameIndex];
+    const previousWinner = currentGame.winner ? { ...currentGame.winner } : null;
+    
     // Update the game
     if (winner) tournament.games[gameIndex].winner = winner;
     if (score) tournament.games[gameIndex].score = score;
@@ -319,6 +331,60 @@ router.put("/games/:id", [auth, admin], async (req, res) => {
     // If marking as completed, set playedAt date
     if (completed) {
       tournament.games[gameIndex].playedAt = Date.now();
+    }
+
+    // Initialize teams object if it doesn't exist
+    if (!tournament.teams) {
+      tournament.teams = {};
+    }
+    
+    // Update teams object based on game result
+    if (completed && winner) {
+      const loser = winner.name === currentGame.teamA.name 
+        ? { ...currentGame.teamB } 
+        : { ...currentGame.teamA };
+      
+      // If loser exists in teams, mark as eliminated
+      if (tournament.teams[loser.name]) {
+        tournament.teams[loser.name] = {
+          ...tournament.teams[loser.name],
+          eliminated: true,
+          eliminationRound: currentGame.round,
+          eliminationMatchupId: matchupId
+        };
+      } else {
+        // Create the team entry if it doesn't exist
+        tournament.teams[loser.name] = {
+          seed: loser.seed,
+          eliminated: true,
+          eliminationRound: currentGame.round,
+          eliminationMatchupId: matchupId
+        };
+      }
+      
+      // Initialize winner entry if needed
+      if (!tournament.teams[winner.name]) {
+        tournament.teams[winner.name] = {
+          seed: winner.seed,
+          eliminated: false,
+          eliminationRound: null,
+          eliminationMatchupId: null
+        };
+      }
+      
+      // If the winner is changing, we need to update the previous winner too
+      if (previousWinner && previousWinner.name !== winner.name) {
+        // Reset the elimination status of the previous "loser" that's now winning
+        if (tournament.teams[winner.name]) {
+          tournament.teams[winner.name].eliminated = false;
+          tournament.teams[winner.name].eliminationRound = null;
+          tournament.teams[winner.name].eliminationMatchupId = null;
+        }
+        
+        // Also update any team that the previous winner will now face in the next round
+        // This would require looking through the bracket to find matchups that would be affected
+        // ...code to update future matchups would go here...
+      }
     }
 
     // Also update the main results object
@@ -373,6 +439,7 @@ router.put("/games/:id", [auth, admin], async (req, res) => {
     tournament.lastUpdated = Date.now();
     tournament.markModified("results");
     tournament.markModified("games");
+    tournament.markModified("teams");
     await tournament.save();
 
     // Auto-calculate scores if requested

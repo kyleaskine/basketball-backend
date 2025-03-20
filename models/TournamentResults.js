@@ -42,6 +42,19 @@ const TournamentResultsSchema = new mongoose.Schema({
     },
     playedAt: Date
   }],
+  teams: {
+    type: Object,
+    default: {}
+    // Structure will be:
+    // { 
+    //   "TeamName": {
+    //     seed: Number,
+    //     eliminated: Boolean,
+    //     eliminationRound: Number,
+    //     eliminationMatchupId: Number
+    //   }
+    // }
+  },
   // Config for scoring points by round
   scoringConfig: {
     type: Object,
