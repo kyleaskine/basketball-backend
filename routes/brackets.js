@@ -84,7 +84,7 @@ router.get('/', auth, async (req, res) => {
 
 // @route   GET api/brackets/:id
 // @desc    Get bracket by ID
-// @access  Public (with edit token)
+// @access  Public (with edit token), or fully public if bracket is locked
 router.get('/:id', async (req, res) => {
   try {
     const bracket = await Bracket.findById(req.params.id);
@@ -93,7 +93,22 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ msg: 'Bracket not found' });
     }
 
-    // If edit token is provided, verify it
+    // If bracket is locked (tournament has started), allow public access
+    if (bracket.isLocked) {
+      // Count total entries for this user with same name
+      const totalEntries = await Bracket.countDocuments({
+        userEmail: bracket.userEmail,
+        participantName: bracket.participantName
+      });
+
+      // Add totalEntries to the response
+      const bracketResponse = bracket.toObject();
+      bracketResponse.totalEntries = totalEntries;
+      
+      return res.json(bracketResponse);
+    }
+
+    // If bracket is not locked, verify edit token or admin access
     const { editToken } = req.query;
     const isAdmin = req.headers['x-auth-token'] ? true : false;
     
