@@ -35,51 +35,53 @@ router.get('/results', async (req, res) => {
 // @desc    Get bracket standings
 // @access  Public
 router.get('/standings', async (req, res) => {
-  try {
-    // Get tournament results to check if it exists
-    const tournament = await TournamentResults.findOne({ 
-      year: new Date().getFullYear() 
-    });
-    
-    if (!tournament || tournament.completedRounds.length === 0) {
-      return res.status(400).json({ 
-        msg: 'No tournament results available yet' 
+    try {
+      // Get tournament results to check if it exists
+      const tournament = await TournamentResults.findOne({ 
+        year: new Date().getFullYear() 
       });
-    }
-    
-    // Get all brackets with scores
-    const brackets = await Bracket.find()
-      .sort({ score: -1, participantName: 1 });
-    
-    // Format standings data
-    const standings = brackets.map((bracket, index) => {
-      return {
-        position: index + 1,
-        participantName: bracket.participantName,
-        entryNumber: bracket.entryNumber || 1,
-        score: bracket.score,
-        userEmail: bracket.userEmail,
-        id: bracket._id
+      
+      /* Commented out this check to allow standings to work without completed rounds
+      if (!tournament || tournament.completedRounds.length === 0) {
+        return res.status(400).json({ 
+          msg: 'No tournament results available yet' 
+        });
+      }
+      */
+      
+      // Get all brackets with scores
+      const brackets = await Bracket.find()
+        .sort({ score: -1, participantName: 1 });
+      
+      // Format standings data
+      const standings = brackets.map((bracket, index) => {
+        return {
+          position: index + 1,
+          participantName: bracket.participantName,
+          entryNumber: bracket.entryNumber || 1,
+          score: bracket.score,
+          userEmail: bracket.userEmail,
+          id: bracket._id
+        };
+      });
+      
+      // Get some stats
+      const stats = {
+        totalBrackets: brackets.length,
+        averageScore: brackets.reduce((acc, bracket) => acc + bracket.score, 0) / (brackets.length || 1), // Avoid division by zero
+        highestScore: brackets.length > 0 ? brackets[0].score : 0,
+        completedRounds: tournament ? tournament.completedRounds : []
       };
-    });
-    
-    // Get some stats
-    const stats = {
-      totalBrackets: brackets.length,
-      averageScore: brackets.reduce((acc, bracket) => acc + bracket.score, 0) / brackets.length,
-      highestScore: brackets.length > 0 ? brackets[0].score : 0,
-      completedRounds: tournament.completedRounds
-    };
-    
-    res.json({
-      standings,
-      stats
-    });
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server error');
-  }
-});
+      
+      res.json({
+        standings,
+        stats
+      });
+    } catch (err) {
+      console.error(err.message);
+      res.status(500).send('Server error');
+    }
+  });
 
 // ADMIN ROUTES
 
@@ -309,15 +311,49 @@ router.put('/games/:id', [auth, admin], async (req, res) => {
       }
       
       // Also update the main results object
+      let matchupFound = false;
       for (const round in tournament.results) {
         const matchupIndex = tournament.results[round].findIndex(
           m => m.id === matchupId
         );
         
         if (matchupIndex !== -1) {
+          matchupFound = true;
           if (winner) tournament.results[round][matchupIndex].winner = winner;
+          
+          // Also update any subsequent rounds where this team appears
+          if (winner) {
+            const updatedMatchup = tournament.results[round][matchupIndex];
+            if (updatedMatchup.nextMatchupId !== null) {
+              // Find which team slot to update (teamA or teamB) in the next matchup
+              let isTeamA = (updatedMatchup.position % 2 === 0);
+              
+              // Find and update the next matchup
+              for (const nextRound in tournament.results) {
+                if (parseInt(nextRound) > parseInt(round)) {
+                  const nextMatchupIndex = tournament.results[nextRound].findIndex(
+                    m => m.id === updatedMatchup.nextMatchupId
+                  );
+                  
+                  if (nextMatchupIndex !== -1) {
+                    // Update the appropriate team slot
+                    if (isTeamA) {
+                      tournament.results[nextRound][nextMatchupIndex].teamA = winner;
+                    } else {
+                      tournament.results[nextRound][nextMatchupIndex].teamB = winner;
+                    }
+                    break;
+                  }
+                }
+              }
+            }
+          }
           break;
         }
+      }
+      
+      if (!matchupFound) {
+        return res.status(404).json({ msg: 'Matchup not found in results' });
       }
       
       // Update lastUpdated timestamp
@@ -368,8 +404,13 @@ router.put('/games/:id', [auth, admin], async (req, res) => {
           }
         }
         
+        // Get a fresh copy of the tournament data to return
+        const updatedTournament = await TournamentResults.findOne({ 
+          year: new Date().getFullYear() 
+        });
+        
         return res.json({ 
-          tournament,
+          tournament: updatedTournament,
           scoresUpdated: true,
           bracketsUpdated: updatedBrackets
         });
@@ -380,6 +421,6 @@ router.put('/games/:id', [auth, admin], async (req, res) => {
       console.error(err.message);
       res.status(500).send('Server error');
     }
-  });
+});
 
 module.exports = router;
