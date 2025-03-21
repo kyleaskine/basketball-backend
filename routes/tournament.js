@@ -9,33 +9,33 @@ const Bracket = require("../models/Bracket");
 // @desc    Get tournament results
 // @access  Public
 router.get("/results", async (req, res) => {
-    try {
-      // Get the current year's tournament results, or create if it doesn't exist
-      let results = await TournamentResults.findOne({
-        year: new Date().getFullYear(),
+  try {
+    // Get the current year's tournament results, or create if it doesn't exist
+    let results = await TournamentResults.findOne({
+      year: new Date().getFullYear(),
+    });
+
+    if (!results) {
+      // Return empty results if none exist yet
+      return res.json({
+        results: null,
+        completedRounds: [],
+        games: [],
+        teams: {}, // Add empty teams object
       });
-  
-      if (!results) {
-        // Return empty results if none exist yet
-        return res.json({
-          results: null,
-          completedRounds: [],
-          games: [],
-          teams: {},  // Add empty teams object
-        });
-      }
-  
-      // Make sure to include teams in the response even if it's empty
-      if (!results.teams) {
-        results.teams = {};
-      }
-  
-      res.json(results);
-    } catch (err) {
-      console.error(err.message);
-      res.status(500).send("Server error");
     }
-  });
+
+    // Make sure to include teams in the response even if it's empty
+    if (!results.teams) {
+      results.teams = {};
+    }
+
+    res.json(results);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send("Server error");
+  }
+});
 
 // @route   GET api/tournament/standings
 // @desc    Get bracket standings
@@ -320,8 +320,10 @@ router.put("/games/:id", [auth, admin], async (req, res) => {
 
     // Get current game and previous winner (if any)
     const currentGame = tournament.games[gameIndex];
-    const previousWinner = currentGame.winner ? { ...currentGame.winner } : null;
-    
+    const previousWinner = currentGame.winner
+      ? { ...currentGame.winner }
+      : null;
+
     // Update the game
     if (winner) tournament.games[gameIndex].winner = winner;
     if (score) tournament.games[gameIndex].score = score;
@@ -337,20 +339,21 @@ router.put("/games/:id", [auth, admin], async (req, res) => {
     if (!tournament.teams) {
       tournament.teams = {};
     }
-    
+
     // Update teams object based on game result
     if (completed && winner) {
-      const loser = winner.name === currentGame.teamA.name 
-        ? { ...currentGame.teamB } 
-        : { ...currentGame.teamA };
-      
+      const loser =
+        winner.name === currentGame.teamA.name
+          ? { ...currentGame.teamB }
+          : { ...currentGame.teamA };
+
       // If loser exists in teams, mark as eliminated
       if (tournament.teams[loser.name]) {
         tournament.teams[loser.name] = {
           ...tournament.teams[loser.name],
           eliminated: true,
           eliminationRound: currentGame.round,
-          eliminationMatchupId: matchupId
+          eliminationMatchupId: matchupId,
         };
       } else {
         // Create the team entry if it doesn't exist
@@ -358,20 +361,20 @@ router.put("/games/:id", [auth, admin], async (req, res) => {
           seed: loser.seed,
           eliminated: true,
           eliminationRound: currentGame.round,
-          eliminationMatchupId: matchupId
+          eliminationMatchupId: matchupId,
         };
       }
-      
+
       // Initialize winner entry if needed
       if (!tournament.teams[winner.name]) {
         tournament.teams[winner.name] = {
           seed: winner.seed,
           eliminated: false,
           eliminationRound: null,
-          eliminationMatchupId: null
+          eliminationMatchupId: null,
         };
       }
-      
+
       // If the winner is changing, we need to update the previous winner too
       if (previousWinner && previousWinner.name !== winner.name) {
         // Reset the elimination status of the previous "loser" that's now winning
@@ -380,7 +383,7 @@ router.put("/games/:id", [auth, admin], async (req, res) => {
           tournament.teams[winner.name].eliminationRound = null;
           tournament.teams[winner.name].eliminationMatchupId = null;
         }
-        
+
         // Also update any team that the previous winner will now face in the next round
         // This would require looking through the bracket to find matchups that would be affected
         // ...code to update future matchups would go here...
@@ -516,19 +519,19 @@ router.get("/enhanced-standings", async (req, res) => {
   try {
     // Get tournament results first to calculate possible scores
     const tournament = await TournamentResults.findOne({
-      year: new Date().getFullYear()
+      year: new Date().getFullYear(),
     });
 
     if (!tournament) {
-      return res.status(400).json({ 
-        msg: 'No tournament results available yet' 
+      return res.status(400).json({
+        msg: "No tournament results available yet",
       });
     }
 
     // Get all brackets with scores
     const brackets = await Bracket.find().sort({
       score: -1,
-      participantName: 1
+      participantName: 1,
     });
 
     // Calculate possible score and extract Final Four picks for each bracket
@@ -542,9 +545,13 @@ router.get("/enhanced-standings", async (req, res) => {
       if (bracket.picks && bracket.picks[6] && bracket.picks[6][0]) {
         // Champion is the winner of the championship matchup
         champion = bracket.picks[6][0].winner;
-        
+
         // Runner-up is the other team in the championship matchup
-        if (bracket.picks[6][0].teamA && bracket.picks[6][0].teamB && champion) {
+        if (
+          bracket.picks[6][0].teamA &&
+          bracket.picks[6][0].teamB &&
+          champion
+        ) {
           if (champion.name === bracket.picks[6][0].teamA.name) {
             runnerUp = bracket.picks[6][0].teamB;
           } else {
@@ -557,15 +564,21 @@ router.get("/enhanced-standings", async (req, res) => {
       if (bracket.picks && bracket.picks[5]) {
         // Get winners from the Final Four matchups
         finalFourTeams = bracket.picks[5]
-          .filter(matchup => matchup.winner)
-          .map(matchup => matchup.winner);
+          .filter((matchup) => matchup.winner)
+          .map((matchup) => matchup.winner);
 
         // Also include teams that made it to Final Four but didn't win
-        bracket.picks[5].forEach(matchup => {
-          if (matchup.teamA && !finalFourTeams.some(team => team.name === matchup.teamA.name)) {
+        bracket.picks[5].forEach((matchup) => {
+          if (
+            matchup.teamA &&
+            !finalFourTeams.some((team) => team.name === matchup.teamA.name)
+          ) {
             finalFourTeams.push(matchup.teamA);
           }
-          if (matchup.teamB && !finalFourTeams.some(team => team.name === matchup.teamB.name)) {
+          if (
+            matchup.teamB &&
+            !finalFourTeams.some((team) => team.name === matchup.teamB.name)
+          ) {
             finalFourTeams.push(matchup.teamB);
           }
         });
@@ -575,48 +588,54 @@ router.get("/enhanced-standings", async (req, res) => {
       let recalculatedScore = 0;
       let possibleScore = 0;
       let futureRoundPoints = {};
-      
+
       // Calculate which teams are still alive for each participant
       const teamsStillAlive = [];
-      
+
       // We need to recalculate from scratch for accuracy
       if (tournament.scoringConfig && tournament.results) {
         // Initialize future round points tracking
         for (let round = 1; round <= 6; round++) {
           futureRoundPoints[round] = 0;
         }
-        
+
         // Loop through all rounds
         for (let round = 1; round <= 6; round++) {
           // Check each matchup in the round
           if (bracket.picks[round]) {
-            bracket.picks[round].forEach(matchup => {
+            bracket.picks[round].forEach((matchup) => {
               // Skip if matchup doesn't have a winner picked
               if (!matchup.winner) return;
-              
+
               // Find corresponding tournament matchup
-              const tournamentMatchup = tournament.results[round]?.find(m => m.id === matchup.id);
-              
+              const tournamentMatchup = tournament.results[round]?.find(
+                (m) => m.id === matchup.id
+              );
+
               // CHECKING INDIVIDUAL GAMES instead of entire rounds
               if (tournamentMatchup?.winner) {
                 // This individual game is complete - check if pick was correct
-                if (tournamentMatchup.winner.name === matchup.winner.name &&
-                    tournamentMatchup.winner.seed === matchup.winner.seed) {
+                if (
+                  tournamentMatchup.winner.name === matchup.winner.name &&
+                  tournamentMatchup.winner.seed === matchup.winner.seed
+                ) {
                   // Correct pick! Add points
                   recalculatedScore += tournament.scoringConfig[round];
                   possibleScore += tournament.scoringConfig[round];
                 }
                 // Wrong pick - no points possible from this game
-              } 
-              else {
+              } else {
                 // Game not yet played - check if player's team is still alive
-                if (tournament.teams && !tournament.teams[matchup.winner.name]?.eliminated) {
+                if (
+                  tournament.teams &&
+                  !tournament.teams[matchup.winner.name]?.eliminated
+                ) {
                   // Team still active, points still possible
                   possibleScore += tournament.scoringConfig[round];
-                  
+
                   // Track points by round for detailed breakdown
                   futureRoundPoints[round] += tournament.scoringConfig[round];
-                  
+
                   // Track this team as still alive for this participant
                   if (!teamsStillAlive.includes(matchup.winner.name)) {
                     teamsStillAlive.push(matchup.winner.name);
@@ -627,10 +646,12 @@ router.get("/enhanced-standings", async (req, res) => {
             });
           }
         }
-        
+
         // Log the difference for debugging if scores don't match
         if (recalculatedScore !== bracket.score) {
-          console.log(`Score mismatch for ${bracket.participantName}: DB=${bracket.score}, Calculated=${recalculatedScore}`);
+          console.log(
+            `Score mismatch for ${bracket.participantName}: DB=${bracket.score}, Calculated=${recalculatedScore}`
+          );
         }
       }
 
@@ -638,7 +659,7 @@ router.get("/enhanced-standings", async (req, res) => {
         position: index + 1,
         participantName: bracket.participantName,
         entryNumber: bracket.entryNumber || 1,
-        score: bracket.score,  // Keep using the database score for consistency
+        score: bracket.score, // Keep using the database score for consistency
         recalculatedScore: recalculatedScore, // Include the recalculated score for reference
         userEmail: bracket.userEmail,
         id: bracket._id,
@@ -648,13 +669,13 @@ router.get("/enhanced-standings", async (req, res) => {
         finalFourTeams,
         // Include additional useful data for UI
         teamsStillAlive,
-        futureRoundPoints
+        futureRoundPoints,
       };
     });
 
     // Sort by score (just to be sure)
     enhancedStandings.sort((a, b) => b.score - a.score);
-    
+
     // Recalculate positions after sorting
     enhancedStandings.forEach((entry, index) => {
       entry.position = index + 1;
@@ -667,13 +688,180 @@ router.get("/enhanced-standings", async (req, res) => {
         brackets.reduce((acc, bracket) => acc + bracket.score, 0) /
         (brackets.length || 1), // Avoid division by zero
       highestScore: brackets.length > 0 ? brackets[0].score : 0,
-      completedRounds: tournament ? tournament.completedRounds : []
+      completedRounds: tournament ? tournament.completedRounds : [],
     };
 
     res.json({
       standings: enhancedStandings,
-      stats
+      stats,
     });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send("Server error");
+  }
+});
+
+// @route   GET api/tournament/matchup-stats/:matchupId/:isTopSlot
+// @desc    Get statistics for teams feeding into a specific matchup
+// @access  Public
+router.get("/matchup-stats/:matchupId/:isTopSlot", async (req, res) => {
+  try {
+    const matchupId = parseInt(req.params.matchupId);
+    const isTopSlot = req.params.isTopSlot === "1"; // Convert to boolean
+    
+    // Get all brackets
+    const brackets = await Bracket.find({ isLocked: true }); // Only consider locked brackets
+    
+    // Initialize stats object
+    const stats = {
+      totalPicks: 0,
+      teamStats: {},
+      matchupInfo: null,
+      sourceMatchups: []
+    };
+    
+    // Find the matchup information from the tournament results
+    const tournament = await TournamentResults.findOne({
+      year: new Date().getFullYear()
+    });
+    
+    if (!tournament || !tournament.results) {
+      return res.status(404).json({ message: "Tournament results not found" });
+    }
+    
+    // Find the current matchup
+    let currentMatchup = null;
+    let currentRound = 0;
+    for (let round = 1; round <= 6; round++) {
+      const matchups = tournament.results[round];
+      if (!matchups) continue;
+      
+      const foundMatchup = matchups.find(m => m.id === matchupId);
+      if (foundMatchup) {
+        currentMatchup = foundMatchup;
+        currentRound = round;
+        break;
+      }
+    }
+    
+    if (!currentMatchup) {
+      return res.status(404).json({ message: "Matchup not found" });
+    }
+    
+    // Store the current matchup info
+    stats.matchupInfo = {
+      ...currentMatchup,
+      round: currentRound
+    };
+    
+    // For round 1, just show the stats for this matchup
+    if (currentRound === 1) {
+      // Process each bracket for this matchup
+      for (const bracket of brackets) {
+        if (!bracket.picks || !bracket.picks[1]) continue;
+        
+        const matchup = bracket.picks[1].find(m => m.id === matchupId);
+        if (matchup && matchup.winner) {
+          stats.totalPicks++;
+          const teamName = matchup.winner.name;
+          
+          if (!stats.teamStats[teamName]) {
+            stats.teamStats[teamName] = {
+              count: 0,
+              seed: matchup.winner.seed,
+              percentage: 0, 
+              isWinner: currentMatchup.winner && currentMatchup.winner.name === teamName,
+              users: []
+            };
+          }
+          
+          stats.teamStats[teamName].count++;
+          stats.teamStats[teamName].users.push({
+            name: bracket.participantName,
+            entryNumber: bracket.entryNumber || 1,
+            email: bracket.userEmail,
+            bracketId: bracket._id
+          });
+        }
+      }
+    } 
+    // For round 2+, find the source matchups and analyze those picks
+    else {
+      const prevRound = currentRound - 1;
+      
+      // Find the source matchups that feed into this one
+      let sourceMatchups = tournament.results[prevRound].filter(
+        m => m.nextMatchupId === matchupId
+      );
+      
+      // Sort source matchups by ID so we can reliably select top (lowest ID) or bottom (highest ID)
+      sourceMatchups.sort((a, b) => a.id - b.id);
+      
+      // Select only the relevant source matchup based on isTopSlot
+      // Top slot (A) = first source matchup (lowest ID)
+      // Bottom slot (B) = last source matchup (highest ID)
+      const relevantSourceMatchup = isTopSlot 
+        ? sourceMatchups[0] // Top slot (A) - first matchup
+        : sourceMatchups[sourceMatchups.length - 1]; // Bottom slot (B) - last matchup
+      
+      if (!relevantSourceMatchup) {
+        return res.status(404).json({ message: "Source matchup not found" });
+      }
+      
+      // Store only the relevant source matchup in response
+      stats.sourceMatchups = [relevantSourceMatchup];
+      
+      const sourceMatchupId = relevantSourceMatchup.id;
+      
+      // Process each bracket for this specific source matchup
+      for (const bracket of brackets) {
+        if (!bracket.picks || !bracket.picks[prevRound]) continue;
+        
+        const matchup = bracket.picks[prevRound].find(m => m.id === sourceMatchupId);
+        if (matchup && matchup.winner) {
+          stats.totalPicks++;
+          const teamName = matchup.winner.name;
+          
+          if (!stats.teamStats[teamName]) {
+            stats.teamStats[teamName] = {
+              count: 0,
+              seed: matchup.winner.seed,
+              percentage: 0,
+              isWinner: relevantSourceMatchup.winner && relevantSourceMatchup.winner.name === teamName,
+              users: []
+            };
+          }
+          
+          stats.teamStats[teamName].count++;
+          stats.teamStats[teamName].users.push({
+            name: bracket.participantName,
+            entryNumber: bracket.entryNumber || 1,
+            email: bracket.userEmail,
+            bracketId: bracket._id
+          });
+        }
+      }
+    }
+    
+    // Calculate percentages
+    if (stats.totalPicks > 0) {
+      for (const team in stats.teamStats) {
+        stats.teamStats[team].percentage = parseFloat(
+          ((stats.teamStats[team].count / stats.totalPicks) * 100).toFixed(1)
+        );
+      }
+    }
+    
+    // Filter out teams with 0 picks
+    const teamsWithPicks = {};
+    for (const teamName in stats.teamStats) {
+      if (stats.teamStats[teamName].count > 0) {
+        teamsWithPicks[teamName] = stats.teamStats[teamName];
+      }
+    }
+    stats.teamStats = teamsWithPicks;
+    
+    res.json(stats);
   } catch (err) {
     console.error(err.message);
     res.status(500).send("Server error");
