@@ -868,4 +868,83 @@ router.get("/matchup-stats/:matchupId/:isTopSlot", async (req, res) => {
   }
 });
 
+// @route   POST api/tournament/generate-next-round
+// @desc    Generate games for the next round
+// @access  Private (admin only)
+router.post('/generate-next-round', [auth, admin], async (req, res) => {
+  try {
+    const tournament = await TournamentResults.findOne({
+      year: new Date().getFullYear()
+    });
+    
+    if (!tournament) {
+      return res.status(404).json({ msg: 'Tournament results not found' });
+    }
+    
+    // Determine which round to generate games for
+    const completedRounds = tournament.completedRounds || [];
+    if (completedRounds.length === 0) {
+      return res.status(400).json({ msg: 'No rounds have been completed yet' });
+    }
+    
+    // Sort completed rounds to find the latest
+    const sortedRounds = [...completedRounds].sort((a, b) => a - b);
+    const latestCompletedRound = sortedRounds[sortedRounds.length - 1];
+    const nextRound = latestCompletedRound + 1;
+    
+    if (nextRound > 6) {
+      return res.status(400).json({ msg: 'Tournament has reached the final round' });
+    }
+    
+    // Get matchups from the bracket structure for the next round
+    const nextRoundMatchups = tournament.results[nextRound];
+    if (!nextRoundMatchups) {
+      return res.status(400).json({ msg: 'No matchups found for the next round' });
+    }
+    
+    // Create new games for matchups that have both teams defined
+    const newGames = [];
+    for (const matchup of nextRoundMatchups) {
+      if (matchup.teamA && matchup.teamB) {
+        // Check if a game already exists for this matchup
+        const existingGame = tournament.games.find(g => g.matchupId === matchup.id);
+        if (!existingGame) {
+          newGames.push({
+            matchupId: matchup.id,
+            round: nextRound,
+            teamA: matchup.teamA,
+            teamB: matchup.teamB,
+            winner: null,
+            score: {
+              teamA: 0,
+              teamB: 0
+            },
+            completed: false
+          });
+        }
+      }
+    }
+    
+    if (newGames.length === 0) {
+      return res.status(400).json({ 
+        msg: 'No new games could be generated. Make sure all previous round winners have been determined.' 
+      });
+    }
+    
+    // Add new games to the tournament
+    tournament.games = [...tournament.games, ...newGames];
+    tournament.markModified('games');
+    await tournament.save();
+    
+    res.json({ 
+      msg: `Successfully generated ${newGames.length} games for round ${nextRound}`,
+      newGames,
+      nextRound
+    });
+  } catch (err) {
+    console.error('Error generating next round games:', err);
+    res.status(500).send('Server error');
+  }
+});
+
 module.exports = router;
