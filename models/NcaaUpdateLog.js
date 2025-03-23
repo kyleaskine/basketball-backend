@@ -1,4 +1,3 @@
-// models/NcaaUpdateLog.js
 const mongoose = require('mongoose');
 
 const NcaaUpdateLogSchema = new mongoose.Schema({
@@ -48,13 +47,13 @@ const NcaaUpdateLogSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
-  errors: [{
+  errorDetails: [{  // Renamed from 'errors' to 'errorDetails'
     message: String,
     stack: String,
     gameId: String
   }],
   logs: [String]
-});
+}, { suppressReservedKeysWarning: true }); // Added option to suppress warnings as a backup
 
 // Add method to add a log entry
 NcaaUpdateLogSchema.methods.addLog = function(message) {

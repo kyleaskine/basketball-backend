@@ -35,49 +35,44 @@ cron.schedule('*/30 8-13 * 3 *', async () => {
  * Run the update process, but only if needed
  */
 async function runUpdate() {
-  try {
-    // Check if all games are already complete for today
-    const allComplete = await areAllGamesCompleteForToday();
-    if (allComplete) {
-      console.log(`[${new Date().toISOString()}] All games for today are already complete. Skipping update.`);
-      return;
-    }
-    
-    // Check if we've run an update in the last 3 minutes
-    const recentLog = await checkRecentUpdateLog();
-    if (recentLog) {
-      console.log(`[${new Date().toISOString()}] Recent update found from ${recentLog.runDate}. Skipping to avoid redundant updates.`);
-      return;
-    }
-    
-    // Run the update
-    const result = await updateTournamentResults();
-    console.log(`[${new Date().toISOString()}] Update completed with status: ${result.status}`);
-    
-    // Close database connection
-    mongoose.connection.close();
-  } catch (error) {
-    console.error('Error running update:', error);
-    
-    // Create error log if possible
     try {
-      const errorLog = new NcaaUpdateLog({
-        status: 'error',
-        logs: [`[${new Date().toISOString()}] Critical error in scheduler: ${error.message}`],
-        errors: [{
-          message: error.message,
-          stack: error.stack
-        }]
-      });
-      await errorLog.save();
-    } catch (logError) {
-      console.error('Failed to save error log:', logError);
+      // Check if all games are already complete for today
+      const allComplete = await areAllGamesCompleteForToday();
+      if (allComplete) {
+        console.log(`[${new Date().toISOString()}] All games for today are already complete. Skipping update.`);
+        return;
+      }
+      
+      // Check if we've run an update in the last 3 minutes
+      const recentLog = await checkRecentUpdateLog();
+      if (recentLog) {
+        console.log(`[${new Date().toISOString()}] Recent update found from ${recentLog.runDate}. Skipping to avoid redundant updates.`);
+        return;
+      }
+      
+      // Run the update
+      const result = await updateTournamentResults();
+      console.log(`[${new Date().toISOString()}] Update completed with status: ${result.status}`);
+      
+    } catch (error) {
+      console.error('Error running update:', error);
+      
+      // Create error log if possible
+      try {
+        const errorLog = new NcaaUpdateLog({
+          status: 'error',
+          logs: [`[${new Date().toISOString()}] Critical error in scheduler: ${error.message}`],
+          errorDetails: [{  // Changed from errors to errorDetails
+            message: error.message,
+            stack: error.stack
+          }]
+        });
+        await errorLog.save();
+      } catch (logError) {
+        console.error('Failed to save error log:', logError);
+      }
     }
-    
-    // Close database connection
-    mongoose.connection.close();
   }
-}
 
 // Add API endpoint for manual updates
 function setupRoutes(app, auth, admin) {

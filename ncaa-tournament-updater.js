@@ -25,6 +25,7 @@ async function updateTournamentResults() {
         status: 'pending',
         trackedGames: [],
         logs: [],
+        errorDetails: [], // Changed from 'errors' to 'errorDetails'
         completedGames: 0,
         totalTrackedGames: 0
       });
@@ -155,10 +156,10 @@ async function updateTournamentResults() {
       if (!matchupId) {
         const errorMsg = `Could not map NCAA game ID ${game.gameID} to our matchup ID. Teams: ${game.away.names.short} vs ${game.home.names.short}`;
         updateLog.addLog(errorMsg);
-        updateLog.errors.push({
-          message: errorMsg,
-          gameId: game.gameID
-        });
+        updateLog.errorDetails.push({  // Changed from errors.push to errorDetails.push
+            message: errorMsg,
+            gameId: game.gameID
+          });
         continue;
       }
       
@@ -207,11 +208,10 @@ async function updateTournamentResults() {
       } catch (error) {
         const errorMsg = `Error updating game ${matchupId}: ${error.message}`;
         updateLog.addLog(errorMsg);
-        updateLog.errors.push({
-          message: errorMsg,
-          stack: error.stack,
-          gameId: game.gameID
-        });
+        updateLog.errorDetails.push({  // Changed from errors.push to errorDetails.push
+            message: errorMsg,
+            gameId: game.gameID
+          });
       }
     }
     
@@ -255,14 +255,14 @@ async function updateTournamentResults() {
       allComplete
     };
     
-  } catch (error) {
+} catch (error) {
     console.error('Error updating tournament:', error);
     
     // Save error to log
     if (updateLog) {
       updateLog.status = 'error';
       updateLog.addLog(`Critical error: ${error.message}`);
-      updateLog.errors.push({
+      updateLog.errorDetails.push({  // Changed from errors to errorDetails
         message: error.message,
         stack: error.stack
       });
@@ -273,9 +273,6 @@ async function updateTournamentResults() {
       status: 'error',
       error: error.message
     };
-  } finally {
-    // Close database connection
-    await mongoose.disconnect();
   }
 }
 
