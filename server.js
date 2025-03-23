@@ -20,6 +20,12 @@ app.use('/api/updates', require('./routes/updates'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/tournament', require('./routes/tournament'));
 
+// NCAA Monitor routes (add these)
+app.use('/api/admin', require('./routes/ncaaMonitor'));
+
+// Add NCAA tournament scheduler
+require('./ncaa-tournament-scheduler')(app);
+
 // Basic route
 app.get('/', (req, res) => {
   res.send('NCAA Bracket API is running...');
