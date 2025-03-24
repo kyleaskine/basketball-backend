@@ -6,7 +6,8 @@ const connectDB = require('./config/db');
 const { 
   updateTournamentResults, 
   checkRecentUpdateLog,
-  areAllGamesCompleteForToday
+  areAllGamesCompleteForToday,
+  markYesterdayAsComplete  // New utility function we'll add
 } = require('./ncaa-tournament-updater');
 const NcaaUpdateLog = require('./models/NcaaUpdateLog');
 
@@ -14,14 +15,11 @@ const NcaaUpdateLog = require('./models/NcaaUpdateLog');
 connectDB();
 
 // Run every 15 minutes from 2pm until 3am for tournament days
-cron.schedule('*/15 14-23 * 3 *', async () => {
-  console.log(`[${new Date().toISOString()}] Running scheduled tournament update (afternoon/evening)...`);
-  await runUpdate();
-});
-
-// Also need to handle the midnight to 3am window (next day)
-cron.schedule('*/15 0-3 * 3 *', async () => {
-  console.log(`[${new Date().toISOString()}] Running scheduled tournament update (late night)...`);
+// Changed to use a single cron job to avoid midnight transition issues
+cron.schedule('*/15 14-23,0-3 * 3 *', async () => {
+  const currentHour = new Date().getHours();
+  const timeOfDay = (currentHour >= 0 && currentHour < 4) ? 'late night' : 'afternoon/evening';
+  console.log(`[${new Date().toISOString()}] Running scheduled tournament update (${timeOfDay})...`);
   await runUpdate();
 });
 
@@ -32,55 +30,145 @@ cron.schedule('*/30 8-13 * 3 *', async () => {
 });
 
 /**
- * Run the update process, but only if needed
+ * Run the update process, but only if needed and enabled
  */
 async function runUpdate() {
-    try {
-      // Check if all games are already complete for today
-      const allComplete = await areAllGamesCompleteForToday();
-      if (allComplete) {
-        console.log(`[${new Date().toISOString()}] All games for today are already complete. Skipping update.`);
-        return;
-      }
+  try {
+    // Check scheduler settings
+    const SchedulerSettings = require('./models/SchedulerSettings');
+    const settings = await SchedulerSettings.findOne({});
+    
+    // If scheduler is disabled, skip update
+    if (settings && !settings.enabled) {
+      console.log(`[${new Date().toISOString()}] Scheduler is disabled. Skipping update.`);
+      return;
+    }
+    
+    // If nextRunTime is set and it's in the future, skip update
+    if (settings && settings.nextRunTime && new Date(settings.nextRunTime) > new Date()) {
+      console.log(`[${new Date().toISOString()}] Next run time is ${settings.nextRunTime}. Skipping update.`);
+      return;
+    }
+    
+    // Check if all games are already complete for today
+    const currentHour = new Date().getHours();
+    const isLateNight = (currentHour >= 0 && currentHour < 4);
+    
+    if (isLateNight) {
+      console.log(`[${new Date().toISOString()}] Late night update - checking yesterday's completion status...`);
+      await checkAndMarkYesterdayCompletion();
+    }
+    
+    const allComplete = await areAllGamesCompleteForToday(isLateNight);
+    if (allComplete) {
+      console.log(`[${new Date().toISOString()}] All games for ${isLateNight ? 'yesterday' : 'today'} are already complete. Skipping update.`);
+      return;
+    }
+    
+    // Check if we've run an update in the last 3 minutes
+    const recentLog = await checkRecentUpdateLog();
+    if (recentLog) {
+      console.log(`[${new Date().toISOString()}] Recent update found from ${recentLog.runDate}. Skipping to avoid redundant updates.`);
+      return;
+    }
+    
+    // Run the update
+    const result = await updateTournamentResults();
+    console.log(`[${new Date().toISOString()}] Update completed with status: ${result.status}`);
+    
+    // Check if we should disable scheduler until tomorrow
+    // If there are no games or all games are complete, and it's not late night
+    if (!isLateNight && (result.status === 'no_updates' || result.status === 'complete_for_day')) {
+      const hasGames = result.totalGames && result.totalGames > 0;
       
-      // Check if we've run an update in the last 3 minutes
-      const recentLog = await checkRecentUpdateLog();
-      if (recentLog) {
-        console.log(`[${new Date().toISOString()}] Recent update found from ${recentLog.runDate}. Skipping to avoid redundant updates.`);
-        return;
-      }
-      
-      // Run the update
-      const result = await updateTournamentResults();
-      console.log(`[${new Date().toISOString()}] Update completed with status: ${result.status}`);
-      
-    } catch (error) {
-      console.error('Error running update:', error);
-      
-      // Create error log if possible
-      try {
-        const errorLog = new NcaaUpdateLog({
-          status: 'error',
-          logs: [`[${new Date().toISOString()}] Critical error in scheduler: ${error.message}`],
-          errorDetails: [{  // Changed from errors to errorDetails
-            message: error.message,
-            stack: error.stack
-          }]
-        });
-        await errorLog.save();
-      } catch (logError) {
-        console.error('Failed to save error log:', logError);
+      if (!hasGames) {
+        // No games today, auto-disable until tomorrow
+        await autoDisableUntilTomorrow('No tournament games scheduled for today');
+      } else if (result.allComplete) {
+        // All games complete, auto-disable until tomorrow
+        await autoDisableUntilTomorrow('All games for today are complete');
       }
     }
+    
+  } catch (error) {
+    console.error('Error running update:', error);
+    
+    // Create error log if possible
+    try {
+      const errorLog = new NcaaUpdateLog({
+        status: 'error',
+        logs: [`[${new Date().toISOString()}] Critical error in scheduler: ${error.message}`],
+        errorDetails: [{
+          message: error.message,
+          stack: error.stack
+        }]
+      });
+      await errorLog.save();
+    } catch (logError) {
+      console.error('Failed to save error log:', logError);
+    }
   }
+}
+
+/**
+ * Check if yesterday's games should be marked as complete
+ * Helps handle situations where the scheduler didn't run at midnight
+ */
+async function checkAndMarkYesterdayCompletion() {
+  try {
+    // First check if we already have a completion record for yesterday
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const dayStart = new Date(yesterday.setHours(0, 0, 0, 0));
+    const dayEnd = new Date(yesterday.setHours(23, 59, 59, 999));
+    
+    const existingCompletionLog = await NcaaUpdateLog.findOne({
+      runDate: { $gte: dayStart, $lte: dayEnd },
+      allGamesComplete: true
+    });
+    
+    if (existingCompletionLog) {
+      console.log(`[${new Date().toISOString()}] Yesterday is already marked as complete.`);
+      return;
+    }
+    
+    // Find the most recent log with tracked games from yesterday
+    const mostRecentLog = await NcaaUpdateLog.findOne({
+      runDate: { $gte: dayStart, $lte: dayEnd },
+      totalTrackedGames: { $gt: 0 }
+    }).sort({ runDate: -1 });
+    
+    if (!mostRecentLog) {
+      console.log(`[${new Date().toISOString()}] No logs found for yesterday.`);
+      return;
+    }
+    
+    // Check if all tracked games are complete
+    const allComplete = mostRecentLog.trackedGames.every(game => game.completed);
+    
+    if (allComplete && !mostRecentLog.allGamesComplete) {
+      console.log(`[${new Date().toISOString()}] All games for yesterday appear complete but weren't marked. Updating status.`);
+      await markYesterdayAsComplete();
+    }
+  } catch (error) {
+    console.error('Error checking yesterday completion:', error);
+  }
+}
 
 // Add API endpoint for manual updates
 function setupRoutes(app, auth, admin) {
   // Route to manually trigger updates
   app.post('/api/admin/update-tournament', [auth, admin], async (req, res) => {
     try {
+      // Check if manually forcing update for a specific day
+      const forceYesterday = req.query.forceYesterday === 'true';
+      
+      if (forceYesterday) {
+        console.log('Manually updating for yesterday...');
+      }
+      
       // Run the update
-      const result = await updateTournamentResults();
+      const result = await updateTournamentResults(forceYesterday);
       
       res.json({
         success: true,
@@ -111,6 +199,25 @@ function setupRoutes(app, auth, admin) {
       res.status(500).json({
         success: false,
         message: 'Error fetching update logs',
+        error: error.message
+      });
+    }
+  });
+  
+  // Route to manually mark yesterday as complete
+  app.post('/api/admin/mark-yesterday-complete', [auth, admin], async (req, res) => {
+    try {
+      const result = await markYesterdayAsComplete();
+      res.json({
+        success: true,
+        message: 'Marked yesterday as complete',
+        result
+      });
+    } catch (error) {
+      console.error('Error marking yesterday complete:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error marking yesterday complete',
         error: error.message
       });
     }
@@ -163,6 +270,37 @@ function setupRoutes(app, auth, admin) {
       });
     }
   });
+}
+
+/**
+ * Auto-disable scheduler until tomorrow morning
+ */
+async function autoDisableUntilTomorrow(reason) {
+  try {
+    const SchedulerSettings = require('./models/SchedulerSettings');
+    let settings = await SchedulerSettings.findOne({});
+    
+    if (!settings) {
+      settings = new SchedulerSettings({});
+    }
+    
+    // Calculate tomorrow at 8 AM
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(8, 0, 0, 0);
+    
+    settings.enabled = false;
+    settings.autoDisabled = true;
+    settings.disabledReason = reason;
+    settings.nextRunTime = tomorrow;
+    settings.lastUpdated = new Date();
+    
+    await settings.save();
+    
+    console.log(`[${new Date().toISOString()}] Scheduler auto-disabled until ${tomorrow.toISOString()}. Reason: ${reason}`);
+  } catch (error) {
+    console.error('Error auto-disabling scheduler:', error);
+  }
 }
 
 // Export for server.js

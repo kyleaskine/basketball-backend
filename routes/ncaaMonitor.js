@@ -3,17 +3,29 @@ const router = express.Router();
 const auth = require('../middleware/auth');
 const admin = require('../middleware/admin');
 const NcaaUpdateLog = require('../models/NcaaUpdateLog');
-const { updateTournamentResults, areAllGamesCompleteForToday } = require('../ncaa-tournament-updater');
+const SchedulerSettings = require('../models/SchedulerSettings');
+const { 
+  updateTournamentResults, 
+  areAllGamesCompleteForToday,
+  markYesterdayAsComplete
+} = require('../ncaa-tournament-updater');
 
 // @route   GET /api/admin/tournament-today
 // @desc    Get today's tournament games status
 // @access  Private (admin only)
 router.get('/tournament-today', [auth, admin], async (req, res) => {
   try {
-    // Get today's date range
-    const today = new Date();
-    const dayStart = new Date(today.setHours(0, 0, 0, 0));
-    const dayEnd = new Date(today.setHours(23, 59, 59, 999));
+    // Check if we want yesterday's games instead (for late night checks)
+    const showYesterday = req.query.yesterday === 'true';
+    
+    // Get date range
+    const date = new Date();
+    if (showYesterday) {
+      date.setDate(date.getDate() - 1);
+    }
+    
+    const dayStart = new Date(date.setHours(0, 0, 0, 0));
+    const dayEnd = new Date(date.setHours(23, 59, 59, 999));
     
     // Get the most recent log that contains tracked games
     const logs = await NcaaUpdateLog.find({
@@ -26,12 +38,13 @@ router.get('/tournament-today', [auth, admin], async (req, res) => {
     if (!latestWithGames) {
       return res.json({
         success: true,
-        message: 'No tracked games found for today',
+        message: `No tracked games found for ${showYesterday ? 'yesterday' : 'today'}`,
         hasGames: false,
         totalGames: 0,
         completedGames: 0,
         pendingGames: 0,
-        allComplete: false
+        allComplete: false,
+        dayDate: dayStart.toISOString().split('T')[0]
       });
     }
     
@@ -47,6 +60,7 @@ router.get('/tournament-today', [auth, admin], async (req, res) => {
       completedGames: completed.length,
       pendingGames: pending.length,
       lastUpdateTime: latestWithGames.runDate,
+      dayDate: dayStart.toISOString().split('T')[0],
       completed,
       pending
     });
@@ -89,13 +103,16 @@ router.get('/tournament-logs', [auth, admin], async (req, res) => {
 // @access  Private (admin only)
 router.post('/update-tournament', [auth, admin], async (req, res) => {
   try {
-    // Check if all games are already complete for today
-    const allComplete = await areAllGamesCompleteForToday();
+    // Get option to force using yesterday's date for API calls
+    const forceYesterday = req.query.forceYesterday === 'true';
     
-    if (allComplete) {
+    // Check if all games are already complete
+    const allComplete = await areAllGamesCompleteForToday(forceYesterday);
+    
+    if (allComplete && !req.query.force) {
       return res.json({
         success: true,
-        message: 'All games for today are already complete',
+        message: `All games for ${forceYesterday ? 'yesterday' : 'today'} are already complete`,
         result: {
           status: 'complete_for_day'
         }
@@ -103,7 +120,7 @@ router.post('/update-tournament', [auth, admin], async (req, res) => {
     }
     
     // Run the update
-    const result = await updateTournamentResults();
+    const result = await updateTournamentResults(forceYesterday);
     
     res.json({
       success: true,
@@ -115,6 +132,119 @@ router.post('/update-tournament', [auth, admin], async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error triggering tournament update',
+      error: error.message
+    });
+  }
+});
+
+// @route   POST /api/admin/mark-yesterday-complete
+// @desc    Manually mark yesterday's games as complete
+// @access  Private (admin only)
+router.post('/mark-yesterday-complete', [auth, admin], async (req, res) => {
+  try {
+    const result = await markYesterdayAsComplete();
+    
+    res.json({
+      success: true,
+      message: 'Yesterday marked as complete',
+      result
+    });
+  } catch (error) {
+    console.error('Error marking yesterday complete:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error marking yesterday complete',
+      error: error.message
+    });
+  }
+});
+
+// @route   GET /api/admin/scheduler-status
+// @desc    Get scheduler status
+// @access  Private (admin only)
+router.get('/scheduler-status', [auth, admin], async (req, res) => {
+  try {
+    // Get or create settings
+    let settings = await SchedulerSettings.findOne({});
+    
+    if (!settings) {
+      settings = new SchedulerSettings({
+        enabled: true,
+        nextRunTime: null,
+        autoDisabled: false,
+        disabledReason: null
+      });
+      await settings.save();
+    }
+    
+    res.json(settings);
+  } catch (error) {
+    console.error('Error fetching scheduler status:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching scheduler status',
+      error: error.message
+    });
+  }
+});
+
+// @route   POST /api/admin/toggle-scheduler
+// @desc    Toggle scheduler on/off
+// @access  Private (admin only)
+router.post('/toggle-scheduler', [auth, admin], async (req, res) => {
+  try {
+    const { enabled } = req.body;
+    
+    if (enabled === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: 'Enabled status is required'
+      });
+    }
+    
+    // Get or create settings
+    let settings = await SchedulerSettings.findOne({});
+    
+    if (!settings) {
+      settings = new SchedulerSettings({});
+    }
+    
+    // Update settings
+    settings.enabled = enabled;
+    settings.autoDisabled = false; // Reset auto-disabled when manually toggled
+    settings.disabledReason = enabled ? null : 'Manually disabled by administrator';
+    settings.lastUpdated = new Date();
+    
+    await settings.save();
+    
+    res.json(settings);
+  } catch (error) {
+    console.error('Error toggling scheduler:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error toggling scheduler',
+      error: error.message
+    });
+  }
+});
+
+// @route   POST /api/admin/mark-yesterday-complete
+// @desc    Manually mark yesterday's games as complete
+// @access  Private (admin only)
+router.post('/mark-yesterday-complete', [auth, admin], async (req, res) => {
+  try {
+    const result = await markYesterdayAsComplete();
+    
+    res.json({
+      success: true,
+      message: 'Yesterday marked as complete',
+      result
+    });
+  } catch (error) {
+    console.error('Error marking yesterday complete:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error marking yesterday complete',
       error: error.message
     });
   }
