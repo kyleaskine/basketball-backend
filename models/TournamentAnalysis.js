@@ -27,18 +27,7 @@ const TournamentAnalysisSchema = new mongoose.Schema({
     type: Number,
     required: true
   },
-  // Store the top contenders
-  topContenders: [{
-    id: String,
-    participantName: String,
-    entryNumber: Number,
-    currentScore: Number,
-    winPercentage: Number,
-    maxScore: Number,
-    minPlace: Number,
-    maxPlace: Number
-  }],
-  // Store podium contenders
+  // Store all podium contenders
   podiumContenders: [{
     id: String,
     participantName: String,
@@ -53,38 +42,77 @@ const TournamentAnalysisSchema = new mongoose.Schema({
     minPlace: Number,
     maxPlace: Number
   }],
-  // Store brackets with highest ceilings
-  highestCeilings: [{
-    id: String,
-    participantName: String,
-    entryNumber: Number,
-    currentScore: Number,
-    maxScore: Number,
-    minPlace: Number,
-    maxPlace: Number
-  }],
-  // Store most volatile brackets
-  mostVolatile: [{
-    id: String,
-    participantName: String,
-    entryNumber: Number,
-    currentScore: Number,
-    minScore: Number,
-    maxScore: Number,
-    minPlace: Number,
-    maxPlace: Number
-  }],
-  // Store Cinderella teams
-  cinderellaTeams: [{
-    name: String,
-    seed: Number
-  }],
+  // New fields
+  playersWithNoPodiumChance: {
+    type: Number,
+    default: 0
+  },
+  playersWithWinChance: {
+    type: Number,
+    default: 0
+  },
   // Store championship picks
   championshipPicks: [{
     team: String,
     count: Number,
     percentage: Number
   }],
+  // Store rare correct picks
+  rareCorrectPicks: [{
+    matchupId: Number,
+    round: Number,
+    winner: {
+      name: String,
+      seed: Number
+    },
+    correctPicks: Number,
+    totalPicks: Number,
+    percentage: Number,
+    region: String,
+    teams: {
+      teamA: {
+        name: String,
+        seed: Number
+      },
+      teamB: {
+        name: String,
+        seed: Number
+      }
+    }
+  }],
+  // Store path-specific analysis
+  pathAnalysis: {
+    teamPaths: {
+      type: Object,
+      default: {}
+    },
+    championshipScenarios: [{
+      matchup: {
+        teamA: {
+          name: String,
+          seed: Number
+        },
+        teamB: {
+          name: String,
+          seed: Number
+        }
+      },
+      outcomes: [{
+        winner: {
+          name: String,
+          seed: Number
+        },
+        bracketImpacts: [{
+          bracketId: String,
+          participantName: String,
+          entryNumber: Number,
+          currentScore: Number,
+          normalPodiumChance: Number,
+          affectedPodiumChance: Number
+        }]
+      }]
+    }]
+  },
   // Store bracket outcomes
   bracketOutcomes: {
     sweet16: [{
