@@ -34,6 +34,9 @@ app.use('/api/updates', require('./routes/updates'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/tournament', require('./routes/tournament'));
 
+// Add Tournament Possibilities route
+app.use('/api/tournament', require('./routes/tournament-possibilities-api'));
+
 // NCAA Monitor routes
 app.use('/api/admin', require('./routes/ncaaMonitor'));
 
