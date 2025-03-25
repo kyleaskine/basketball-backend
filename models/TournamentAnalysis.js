@@ -34,7 +34,9 @@ const TournamentAnalysisSchema = new mongoose.Schema({
     entryNumber: Number,
     currentScore: Number,
     winPercentage: Number,
-    maxScore: Number
+    maxScore: Number,
+    minPlace: Number,
+    maxPlace: Number
   }],
   // Store podium contenders
   podiumContenders: [{
@@ -47,7 +49,9 @@ const TournamentAnalysisSchema = new mongoose.Schema({
       2: Number,
       3: Number,
       podium: Number
-    }
+    },
+    minPlace: Number,
+    maxPlace: Number
   }],
   // Store brackets with highest ceilings
   highestCeilings: [{
@@ -55,7 +59,9 @@ const TournamentAnalysisSchema = new mongoose.Schema({
     participantName: String,
     entryNumber: Number,
     currentScore: Number,
-    maxScore: Number
+    maxScore: Number,
+    minPlace: Number,
+    maxPlace: Number
   }],
   // Store most volatile brackets
   mostVolatile: [{
@@ -64,7 +70,9 @@ const TournamentAnalysisSchema = new mongoose.Schema({
     entryNumber: Number,
     currentScore: Number,
     minScore: Number,
-    maxScore: Number
+    maxScore: Number,
+    minPlace: Number,
+    maxPlace: Number
   }],
   // Store Cinderella teams
   cinderellaTeams: [{
