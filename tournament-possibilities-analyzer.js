@@ -1619,6 +1619,7 @@ function findRareCorrectPicks(brackets, tournament) {
       // Count how many brackets picked this winner
       let correctPicks = 0;
       let totalPicks = 0;
+      const correctPicksByUsers = []; // Track users who made correct picks
 
       for (const bracket of brackets) {
         if (!bracket.picks || !bracket.picks[round]) continue;
@@ -1635,6 +1636,13 @@ function findRareCorrectPicks(brackets, tournament) {
           bracketMatchup.winner.seed === matchup.winner.seed
         ) {
           correctPicks++;
+          // Add user to correctPicksByUsers
+          correctPicksByUsers.push({
+            bracketId: bracket._id.toString(),
+            participantName: bracket.participantName,
+            entryNumber: bracket.entryNumber || 1,
+            userEmail: bracket.userEmail
+          });
         }
       }
 
@@ -1655,6 +1663,7 @@ function findRareCorrectPicks(brackets, tournament) {
             teamA: matchup.teamA,
             teamB: matchup.teamB,
           },
+          correctPicksByUsers, // Add the users who made correct picks
         });
       }
     }

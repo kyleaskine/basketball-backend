@@ -78,7 +78,14 @@ const TournamentAnalysisSchema = new mongoose.Schema({
         name: String,
         seed: Number
       }
-    }
+    },
+    // Add this new field to store who made the rare picks
+    correctPicksByUsers: [{
+      bracketId: String,
+      participantName: String,
+      entryNumber: Number,
+      userEmail: String
+    }]
   }],
   // Store path-specific analysis
   pathAnalysis: {

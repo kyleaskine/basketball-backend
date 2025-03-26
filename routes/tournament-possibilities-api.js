@@ -14,16 +14,37 @@ const {
 // @access  Public
 router.get("/possibilities", async (req, res) => {
   try {
-    // Check the database for recent analysis
+    // Check the database for the requested analysis
     const TournamentAnalysis = require("../models/TournamentAnalysis");
-
-    // Get the most recent analysis
-    const dbAnalysis = await TournamentAnalysis.findOne()
-      .sort({ timestamp: -1 })
-      .limit(1);
+    
+    // Get the requested stage from query params
+    const requestedStage = req.query.stage;
+    
+    let dbAnalysis;
+    
+    if (requestedStage) {
+      // If a specific stage is requested (by totalPossibleOutcomes)
+      dbAnalysis = await TournamentAnalysis.findOne({
+        totalPossibleOutcomes: parseInt(requestedStage)
+      }).sort({ timestamp: -1 });
+    } else {
+      // Otherwise get the most recent analysis
+      dbAnalysis = await TournamentAnalysis.findOne()
+        .sort({ timestamp: -1 })
+        .limit(1);
+    }
 
     if (dbAnalysis) {
-      console.log("Using database analysis from", dbAnalysis.timestamp);
+      console.log("Using analysis from", dbAnalysis.timestamp, 
+                 requestedStage ? "(historical)" : "(current)");
+      
+      // Sort podiumContenders by podium percentage in descending order
+      if (dbAnalysis.podiumContenders && Array.isArray(dbAnalysis.podiumContenders)) {
+        dbAnalysis.podiumContenders.sort((a, b) => 
+          (b.placePercentages?.podium || 0) - (a.placePercentages?.podium || 0)
+        );
+      }
+      
       return res.json(dbAnalysis);
     }
 
@@ -234,6 +255,65 @@ router.get("/path-analysis", async (req, res) => {
   } catch (err) {
     console.error("Error fetching path analysis:", err);
     res.status(500).send("Server error");
+  }
+});
+
+// @route   GET api/tournament/analysis-history
+// @desc    Get available historical analysis stages
+// @access  Public
+router.get("/analysis-history", async (req, res) => {
+  try {
+    const TournamentAnalysis = require("../models/TournamentAnalysis");
+
+    // Find all distinct stages and timestamps
+    // First find all analyses sorted by timestamp
+    const allAnalyses = await TournamentAnalysis.find()
+      .sort({ timestamp: -1 })
+      .select("stage roundName timestamp totalPossibleOutcomes");
+      
+    // Create a map to track unique totalPossibleOutcomes values
+    const uniqueAnalysesMap = new Map();
+    
+    // Only keep the most recent analysis for each unique totalPossibleOutcomes
+    allAnalyses.forEach(analysis => {
+      const key = analysis.totalPossibleOutcomes.toString();
+      if (!uniqueAnalysesMap.has(key)) {
+        uniqueAnalysesMap.set(key, analysis);
+      }
+    });
+    
+    // Convert Map to array and format the response
+    const analysisHistory = Array.from(uniqueAnalysesMap.values()).map(analysis => {
+      // Calculate log base 2 in JavaScript instead of MongoDB
+      // This gives us the number of games remaining
+      const gamesRemaining = Math.round(Math.log2(analysis.totalPossibleOutcomes));
+      
+      // Format the date for the label
+      const date = new Date(analysis.timestamp);
+      const formattedDate = `${date.toLocaleString('default', { month: 'long' })} ${date.getDate()}`;
+      
+      return {
+        value: analysis.totalPossibleOutcomes.toString(),
+        label: `${analysis.roundName} (${formattedDate})`,
+        gamesRemaining,
+        timestamp: analysis.timestamp
+      };
+    });
+    
+    // Sort by timestamp descending
+    analysisHistory.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+    res.json({
+      success: true,
+      stages: analysisHistory
+    });
+  } catch (err) {
+    console.error("Error fetching analysis history:", err);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching analysis history",
+      error: err.message
+    });
   }
 });
 
