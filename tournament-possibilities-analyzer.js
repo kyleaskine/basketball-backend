@@ -17,7 +17,7 @@ const TournamentAnalysis = require("./models/TournamentAnalysis");
 /**
  * Main function to analyze tournament possibilities
  * @param {Boolean} shouldSaveToDb - Whether to save the results to database
- * @returns {Object} Analysis results
+ * @returns {Object} Analysis results or error object
  */
 async function analyzeTournamentPossibilities(shouldSaveToDb = false) {
     let dbConnection = null;
@@ -33,6 +33,17 @@ async function analyzeTournamentPossibilities(shouldSaveToDb = false) {
       });
       if (!tournament) {
         throw new Error("No tournament data found for current year");
+      }
+  
+      // Check if we're at Sweet 16 or beyond (16 or fewer teams remaining)
+      const activeTeams = getActiveTeams(tournament);
+      if (activeTeams.length > 16) {
+        console.log(`Tournament has ${activeTeams.length} active teams - too many for analysis (need 16 or fewer)`);
+        return {
+          error: true,
+          message: "Analysis is only available once the tournament reaches Sweet 16 (16 or fewer teams)",
+          activeTeamCount: activeTeams.length
+        };
       }
   
       // Get tournament stage information
@@ -59,18 +70,16 @@ async function analyzeTournamentPossibilities(shouldSaveToDb = false) {
       );
   
       // Generate statistics
-      const stats = generateStatistics(brackets, outcomeAnalysis, tournament);
+      const stats = generateStatistics(brackets, outcomeAnalysis, tournament, possibleOutcomes);
       
-      // Save results to database if requested
+      // Save results to database if explicitly requested
       if (shouldSaveToDb) {
         const savedAnalysis = await saveAnalysisToDb(stats);
         console.log(`Analysis saved to database with ID: ${savedAnalysis._id}`);
+      } else {
+        console.log("Analysis complete (not saved to database)");
       }
-      
-      // Save to cache files
-      await saveToCacheFiles(stats);
   
-      console.log("Analysis complete!");
       return stats;
     } catch (error) {
       console.error("Error in analysis:", error);
@@ -744,9 +753,10 @@ function calculateProjectedScore(bracket, projectedTournament) {
  * @param {Array} brackets - All brackets
  * @param {Object} analysis - Analysis results
  * @param {Object} tournament - Tournament data
+ * @param {Array} possibleOutcomes - All possible tournament outcomes
  * @returns {Object} Statistics
  */
-function generateStatistics(brackets, analysis, tournament) {
+function generateStatistics(brackets, analysis, tournament, possibleOutcomes) {
     const bracketResults = analysis.bracketResults;
     const bracketIds = Object.keys(bracketResults);
     
@@ -787,7 +797,7 @@ function generateStatistics(brackets, analysis, tournament) {
     const rareCorrectPicks = findRareCorrectPicks(brackets, tournament);
     
     // Generate path-specific analysis
-    const pathAnalysis = generatePathAnalysis(brackets, analysis, tournament);
+    const pathAnalysis = generatePathAnalysis(brackets, analysis, tournament, possibleOutcomes);
     
     return {
       timestamp: new Date(),
@@ -806,6 +816,421 @@ function generateStatistics(brackets, analysis, tournament) {
       currentRound: stageInfo.currentRound,
       roundProgress: stageInfo.progress
     };
+}
+
+/**
+ * Generate path-specific analysis showing how specific outcomes affect bracket standings
+ * @param {Array} brackets - All brackets
+ * @param {Object} analysis - Analysis results
+ * @param {Object} tournament - Tournament data
+ * @param {Array} possibleOutcomes - All possible tournament outcomes
+ * @returns {Object} Path analysis
+ */
+function generatePathAnalysis(brackets, analysis, tournament, possibleOutcomes) {
+  const { bracketResults } = analysis;
+  const pathAnalysis = {
+    teamPaths: {},
+    championshipScenarios: []
+  };
+  
+  // Get active teams in the tournament
+  const activeTeams = getActiveTeams(tournament);
+  
+  // Group outcomes by championship winner
+  const outcomesByChampion = groupOutcomesByChampion(possibleOutcomes);
+  
+  // 1. For each active team, analyze what happens if they win the championship
+  activeTeams.forEach(team => {
+    // Initialize team path analysis
+    pathAnalysis.teamPaths[team.name] = {
+      seed: team.seed,
+      winsChampionship: {
+        affectedBrackets: [],
+        podiumChanges: []
+      }
+    };
+    
+    // Get all outcomes where this team wins the championship
+    const teamWinsOutcomes = outcomesByChampion[team.name] || [];
+    const totalTeamWinsOutcomes = teamWinsOutcomes.length;
+    
+    if (totalTeamWinsOutcomes === 0) return; // Skip if no outcomes
+    
+    // For each bracket, calculate actual podium chances if this team wins
+    Object.keys(bracketResults).forEach(bracketId => {
+      const bracket = brackets.find(b => b._id.toString() === bracketId);
+      
+      // Skip if no bracket found
+      if (!bracket) return;
+      
+      // Check if this bracket picked this team as champion
+      let pickedAsChampion = false;
+      if (bracket.picks && bracket.picks[6] && bracket.picks[6][0] && bracket.picks[6][0].winner) {
+        pickedAsChampion = bracket.picks[6][0].winner.name === team.name;
+      }
+      
+      // Calculate podium finishes for this bracket in these outcomes
+      let podiumFinishes = 0;
+      
+      teamWinsOutcomes.forEach(outcome => {
+        // For each outcome where this team wins, get this bracket's position
+        const position = calculateBracketPositionInOutcome(bracketId, outcome, brackets);
+        if (position <= 3) {
+          podiumFinishes++;
+        }
+      });
+      
+      // Calculate adjusted podium chance
+      const adjustedPodiumChance = (podiumFinishes / totalTeamWinsOutcomes) * 100;
+      
+      // If significant change in podium chance (> 5%) or they picked this champion
+      const normalPodiumChance = bracketResults[bracketId].placePercentages.podium;
+      const changeDifference = Math.abs(adjustedPodiumChance - normalPodiumChance);
+      
+      if (pickedAsChampion || changeDifference > 5) {
+        const podiumChange = {
+          bracketId,
+          participantName: bracketResults[bracketId].participantName,
+          entryNumber: bracketResults[bracketId].entryNumber || 1,
+          currentScore: bracketResults[bracketId].currentScore,
+          normalPodiumChance: normalPodiumChance,
+          adjustedPodiumChance: adjustedPodiumChance,
+          changePercent: adjustedPodiumChance - normalPodiumChance
+        };
+        
+        pathAnalysis.teamPaths[team.name].winsChampionship.podiumChanges.push(podiumChange);
+      }
+    });
+    
+    // Sort by change in podium chance (largest positive change first)
+    pathAnalysis.teamPaths[team.name].winsChampionship.podiumChanges.sort((a, b) => 
+      b.changePercent - a.changePercent
+    );
+  });
+  
+  // 2. For Final Four and Championship rounds, analyze all possible championship matchups
+  const stageInfo = determineTournamentStage(tournament);
+  if (stageInfo.currentRound >= 5) {
+    // Get all possible championship matchups
+    const possibleFinalists = getTeamsInRound(tournament, 5); // Teams in Final Four
+    
+    if (possibleFinalists.length >= 2) {
+      // Create all possible championship matchup combinations
+      for (let i = 0; i < possibleFinalists.length; i++) {
+        for (let j = i + 1; j < possibleFinalists.length; j++) {
+          const teamA = possibleFinalists[i];
+          const teamB = possibleFinalists[j];
+          
+          // Get outcomes with this championship matchup
+          const matchupOutcomes = possibleOutcomes.filter(outcome => 
+            isChampionshipMatchup(outcome, teamA.name, teamB.name)
+          );
+          
+          // Create scenario for this championship matchup
+          const scenario = {
+            matchup: {
+              teamA,
+              teamB
+            },
+            outcomes: [
+              { winner: teamA, bracketImpacts: [] },
+              { winner: teamB, bracketImpacts: [] }
+            ]
+          };
+          
+          // Get outcomes for each winner
+          const teamAWinsOutcomes = matchupOutcomes.filter(outcome => 
+            getChampionshipWinner(outcome) === teamA.name
+          );
+          
+          const teamBWinsOutcomes = matchupOutcomes.filter(outcome => 
+            getChampionshipWinner(outcome) === teamB.name
+          );
+          
+          // Analyze impact on brackets for each winner
+          Object.keys(bracketResults).forEach(bracketId => {
+            const bracket = brackets.find(b => b._id.toString() === bracketId);
+            if (!bracket) return;
+            
+            // Calculate podium chances under each winner scenario
+            const normalPodiumChance = bracketResults[bracketId].placePercentages.podium;
+            
+            // Calculate for teamA winning
+            if (teamAWinsOutcomes.length > 0) {
+              let podiumFinishes = 0;
+              teamAWinsOutcomes.forEach(outcome => {
+                const position = calculateBracketPositionInOutcome(bracketId, outcome, brackets);
+                if (position <= 3) podiumFinishes++;
+              });
+              
+              const adjustedPodiumChance = (podiumFinishes / teamAWinsOutcomes.length) * 100;
+              const changePercent = adjustedPodiumChance - normalPodiumChance;
+              
+              // Only include if significant change or picked this team
+              let pickedTeamA = false;
+              if (bracket.picks && bracket.picks[6] && bracket.picks[6][0] && bracket.picks[6][0].winner) {
+                pickedTeamA = bracket.picks[6][0].winner.name === teamA.name;
+              }
+              
+              if (pickedTeamA || Math.abs(changePercent) > 5) {
+                scenario.outcomes[0].bracketImpacts.push({
+                  bracketId,
+                  participantName: bracketResults[bracketId].participantName,
+                  entryNumber: bracketResults[bracketId].entryNumber || 1,
+                  currentScore: bracketResults[bracketId].currentScore,
+                  normalPodiumChance: normalPodiumChance,
+                  affectedPodiumChance: adjustedPodiumChance,
+                  changePercent: changePercent
+                });
+              }
+            }
+            
+            // Calculate for teamB winning
+            if (teamBWinsOutcomes.length > 0) {
+              let podiumFinishes = 0;
+              teamBWinsOutcomes.forEach(outcome => {
+                const position = calculateBracketPositionInOutcome(bracketId, outcome, brackets);
+                if (position <= 3) podiumFinishes++;
+              });
+              
+              const adjustedPodiumChance = (podiumFinishes / teamBWinsOutcomes.length) * 100;
+              const changePercent = adjustedPodiumChance - normalPodiumChance;
+              
+              // Only include if significant change or picked this team
+              let pickedTeamB = false;
+              if (bracket.picks && bracket.picks[6] && bracket.picks[6][0] && bracket.picks[6][0].winner) {
+                pickedTeamB = bracket.picks[6][0].winner.name === teamB.name;
+              }
+              
+              if (pickedTeamB || Math.abs(changePercent) > 5) {
+                scenario.outcomes[1].bracketImpacts.push({
+                  bracketId,
+                  participantName: bracketResults[bracketId].participantName,
+                  entryNumber: bracketResults[bracketId].entryNumber || 1,
+                  currentScore: bracketResults[bracketId].currentScore,
+                  normalPodiumChance: normalPodiumChance,
+                  affectedPodiumChance: adjustedPodiumChance,
+                  changePercent: changePercent
+                });
+              }
+            }
+          });
+          
+          // Sort impacts by change in podium chance
+          scenario.outcomes[0].bracketImpacts.sort((a, b) => b.changePercent - a.changePercent);
+          scenario.outcomes[1].bracketImpacts.sort((a, b) => b.changePercent - a.changePercent);
+          
+          // Add scenario to analysis
+          pathAnalysis.championshipScenarios.push(scenario);
+        }
+      }
+    }
+  }
+  
+  return pathAnalysis;
+}
+
+/**
+ * Group possible outcomes by championship winner
+ * @param {Array} possibleOutcomes - All possible tournament outcomes
+ * @returns {Object} Outcomes grouped by championship winner
+ */
+function groupOutcomesByChampion(possibleOutcomes) {
+  const outcomesByChampion = {};
+  
+  possibleOutcomes.forEach(outcome => {
+    const champion = getChampionshipWinner(outcome);
+    if (champion) {
+      if (!outcomesByChampion[champion]) {
+        outcomesByChampion[champion] = [];
+      }
+      outcomesByChampion[champion].push(outcome);
+    }
+  });
+  
+  return outcomesByChampion;
+}
+
+/**
+ * Get the championship winner from an outcome
+ * @param {Object} outcome - A possible tournament outcome
+ * @returns {String} Name of the championship winner, or null if not determined
+ */
+function getChampionshipWinner(outcome) {
+  // Find any round 6 (championship) matchup
+  const championshipResultEntry = Object.entries(outcome.matchupResults)
+    .find(([matchupId, result]) => result.round === 6);
+  
+  // Return winner name if found
+  if (championshipResultEntry && championshipResultEntry[1].winner) {
+    return championshipResultEntry[1].winner.name;
+  }
+  
+  // If no explicit championship round 6 matchup, check all matchup results
+  // for the highest matchup ID which is likely the championship
+  if (Object.keys(outcome.matchupResults).length > 0) {
+    const matchupIds = Object.keys(outcome.matchupResults).map(id => parseInt(id));
+    const highestMatchupId = Math.max(...matchupIds).toString();
+    const highestMatchup = outcome.matchupResults[highestMatchupId];
+    
+    if (highestMatchup && highestMatchup.winner) {
+      return highestMatchup.winner.name;
+    }
+  }
+  
+  // If still not found, check projected matchups
+  if (outcome.projectedMatchups) {
+    // Try both common championship IDs (62 and 63)
+    for (const championshipId of ["62", "63"]) {
+      if (outcome.projectedMatchups[championshipId] && outcome.matchupResults[championshipId]) {
+        const championshipResult = outcome.matchupResults[championshipId];
+        
+        if (championshipResult && championshipResult.winner) {
+          return championshipResult.winner.name;
+        }
+      }
+    }
+    
+    // Last resort: check the highest matchup ID in projected matchups
+    const projectedIds = Object.keys(outcome.projectedMatchups).map(id => parseInt(id));
+    if (projectedIds.length > 0) {
+      const highestProjectedId = Math.max(...projectedIds).toString();
+      
+      if (outcome.matchupResults[highestProjectedId] && 
+          outcome.matchupResults[highestProjectedId].winner) {
+        return outcome.matchupResults[highestProjectedId].winner.name;
+      }
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Check if an outcome has a specific championship matchup
+ * @param {Object} outcome - A possible tournament outcome
+ * @param {String} teamAName - First team name
+ * @param {String} teamBName - Second team name
+ * @returns {Boolean} True if the matchup exists
+ */
+function isChampionshipMatchup(outcome, teamAName, teamBName) {
+  // Try common championship IDs (62 and 63)
+  for (const championshipId of ["62", "63"]) {
+    if (outcome.projectedMatchups && outcome.projectedMatchups[championshipId]) {
+      const championship = outcome.projectedMatchups[championshipId];
+      
+      // Check if teams match (in either order)
+      if (championship.teamA && championship.teamB) {
+        if ((championship.teamA.name === teamAName && championship.teamB.name === teamBName) ||
+            (championship.teamA.name === teamBName && championship.teamB.name === teamAName)) {
+          return true;
+        }
+      }
+    }
+  }
+  
+  // If not found by ID, look for any round 6 matchup
+  const round6Matchups = Object.values(outcome.projectedMatchups || {})
+    .filter(matchup => matchup.round === 6);
+  
+  for (const championship of round6Matchups) {
+    if (championship.teamA && championship.teamB) {
+      if ((championship.teamA.name === teamAName && championship.teamB.name === teamBName) ||
+          (championship.teamA.name === teamBName && championship.teamB.name === teamAName)) {
+        return true;
+      }
+    }
+  }
+  
+  return false;
+}
+
+/**
+ * Calculate a bracket's position in a specific outcome
+ * @param {String} bracketId - ID of the bracket
+ * @param {Object} outcome - A tournament outcome
+ * @param {Array} brackets - All brackets
+ * @returns {Number} Position of the bracket (1-based)
+ */
+function calculateBracketPositionInOutcome(bracketId, outcome, brackets) {
+  // Calculate scores for all brackets in this outcome
+  const scores = {};
+  brackets.forEach(bracket => {
+    const projectedScore = calculateProjectedScoreForOutcome(bracket, outcome);
+    scores[bracket._id.toString()] = projectedScore;
+  });
+  
+  // Sort brackets by score (descending)
+  const sortedIds = Object.keys(scores).sort((a, b) => scores[b] - scores[a]);
+  
+  // Handle ties correctly
+  const positions = {};
+  let currentPosition = 1;
+  let currentScore = null;
+  let sameScoreCount = 0;
+  
+  sortedIds.forEach(id => {
+    const score = scores[id];
+    
+    if (score !== currentScore) {
+      // New score level, update position
+      currentPosition += sameScoreCount;
+      sameScoreCount = 1;
+      currentScore = score;
+    } else {
+      // Same score, count for next position calculation
+      sameScoreCount++;
+    }
+    
+    positions[id] = currentPosition;
+  });
+  
+  return positions[bracketId] || brackets.length + 1; // Default to last place if not found
+}
+
+/**
+ * Calculate a bracket's projected score for a specific outcome
+ * @param {Object} bracket - A bracket submission
+ * @param {Object} outcome - Tournament outcome
+ * @returns {Number} Projected score
+ */
+function calculateProjectedScoreForOutcome(bracket, outcome) {
+  // Base score from already completed rounds
+  let score = bracket.score || 0;
+  
+  // Add points for correct picks in this outcome
+  if (bracket.picks) {
+    for (let round = 3; round <= 6; round++) {
+      if (!bracket.picks[round]) continue;
+      
+      // Check each matchup in the round
+      bracket.picks[round].forEach(matchup => {
+        if (!matchup.winner) return;
+        
+        // Find if this matchup has a result in the outcome
+        const matchupResult = outcome.matchupResults[matchup.id];
+        if (matchupResult && matchupResult.winner) {
+          // Check if bracket's pick matches outcome
+          if (
+            matchupResult.winner.name === matchup.winner.name &&
+            matchupResult.winner.seed === matchup.winner.seed
+          ) {
+            // Award points based on round (using standard scoring)
+            const pointsByRound = {
+              3: 4,  // Sweet 16
+              4: 8,  // Elite 8
+              5: 16, // Final Four
+              6: 32  // Championship
+            };
+            
+            score += pointsByRound[round] || 0;
+          }
+        }
+      });
+    }
+  }
+  
+  return score;
 }
 
 /**
@@ -986,144 +1411,6 @@ function findRareCorrectPicks(brackets, tournament) {
   
   // Sort by rarity (lowest percentage first)
   return rarePicks.sort((a, b) => a.percentage - b.percentage);
-}
-
-/**
- * Generate path-specific analysis showing how specific outcomes affect bracket standings
- * @param {Array} brackets - All brackets
- * @param {Object} analysis - Analysis results
- * @param {Object} tournament - Tournament data
- * @returns {Object} Path analysis
- */
-function generatePathAnalysis(brackets, analysis, tournament) {
-  const { bracketResults } = analysis;
-  const pathAnalysis = {
-    teamPaths: {},
-    championshipScenarios: []
-  };
-  
-  // Get active teams in the tournament
-  const activeTeams = getActiveTeams(tournament);
-  
-  // 1. For each active team, analyze what happens if they win the championship
-  activeTeams.forEach(team => {
-    // Initialize team path analysis
-    pathAnalysis.teamPaths[team.name] = {
-      seed: team.seed,
-      winsChampionship: {
-        affectedBrackets: [],
-        podiumChanges: []
-      }
-    };
-    
-    // For each bracket, check if this team winning the championship significantly affects their chances
-    Object.keys(bracketResults).forEach(bracketId => {
-      const bracket = brackets.find(b => b._id.toString() === bracketId);
-      
-      // Skip if no bracket found
-      if (!bracket) return;
-      
-      // Check if this bracket picked this team as champion
-      let pickedAsChampion = false;
-      if (bracket.picks && bracket.picks[6] && bracket.picks[6][0] && bracket.picks[6][0].winner) {
-        pickedAsChampion = bracket.picks[6][0].winner.name === team.name;
-      }
-      
-      // If they picked this team as champion, add significant boost to podium chances
-      if (pickedAsChampion) {
-        const podiumChange = {
-          bracketId,
-          participantName: bracketResults[bracketId].participantName,
-          entryNumber: bracketResults[bracketId].entryNumber || 1,
-          currentScore: bracketResults[bracketId].currentScore,
-          normalPodiumChance: bracketResults[bracketId].placePercentages.podium,
-          adjustedPodiumChance: 100 // If their champion wins, they have 100% podium chance
-        };
-        
-        pathAnalysis.teamPaths[team.name].winsChampionship.podiumChanges.push(podiumChange);
-      }
-    });
-    
-    // Sort by adjusted chance difference
-    pathAnalysis.teamPaths[team.name].winsChampionship.podiumChanges.sort((a, b) => 
-      (b.adjustedPodiumChance - b.normalPodiumChance) - (a.adjustedPodiumChance - a.normalPodiumChance)
-    );
-  });
-  
-  // 2. For Final Four and Championship rounds, analyze all possible championship matchups
-  const stageInfo = determineTournamentStage(tournament);
-  if (stageInfo.currentRound >= 5) {
-    // Get all possible championship matchups
-    const possibleFinalists = getTeamsInRound(tournament, 5); // Teams in Final Four
-    
-    if (possibleFinalists.length >= 2) {
-      // Create all possible championship matchup combinations
-      for (let i = 0; i < possibleFinalists.length; i++) {
-        for (let j = i + 1; j < possibleFinalists.length; j++) {
-          const teamA = possibleFinalists[i];
-          const teamB = possibleFinalists[j];
-          
-          // Create scenario for each possible championship matchup
-          const scenario = {
-            matchup: {
-              teamA,
-              teamB
-            },
-            outcomes: [
-              { winner: teamA, bracketImpacts: [] },
-              { winner: teamB, bracketImpacts: [] }
-            ]
-          };
-          
-          // Analyze impact of each outcome on all brackets
-          Object.keys(bracketResults).forEach(bracketId => {
-            const bracket = brackets.find(b => b._id.toString() === bracketId);
-            
-            // Skip if no bracket found
-            if (!bracket) return;
-            
-            // Check their championship pick
-            let championshipPick = null;
-            if (bracket.picks && bracket.picks[6] && bracket.picks[6][0] && bracket.picks[6][0].winner) {
-              championshipPick = bracket.picks[6][0].winner;
-            }
-            
-            // If they picked one of these teams, add them to the appropriate outcome
-            if (championshipPick) {
-              if (championshipPick.name === teamA.name) {
-                scenario.outcomes[0].bracketImpacts.push({
-                  bracketId,
-                  participantName: bracketResults[bracketId].participantName,
-                  entryNumber: bracketResults[bracketId].entryNumber || 1,
-                  currentScore: bracketResults[bracketId].currentScore,
-                  normalPodiumChance: bracketResults[bracketId].placePercentages.podium,
-                  affectedPodiumChance: 100 // This is simplified - in reality would need more analysis
-                });
-              } else if (championshipPick.name === teamB.name) {
-                scenario.outcomes[1].bracketImpacts.push({
-                  bracketId,
-                  participantName: bracketResults[bracketId].participantName,
-                  entryNumber: bracketResults[bracketId].entryNumber || 1,
-                  currentScore: bracketResults[bracketId].currentScore,
-                  normalPodiumChance: bracketResults[bracketId].placePercentages.podium,
-                  affectedPodiumChance: 100 // This is simplified - in reality would need more analysis
-                });
-              }
-            }
-          });
-          
-          // Sort impacts by podium chance
-          scenario.outcomes[0].bracketImpacts.sort((a, b) => b.affectedPodiumChance - a.affectedPodiumChance);
-          scenario.outcomes[1].bracketImpacts.sort((a, b) => b.affectedPodiumChance - a.affectedPodiumChance);
-          
-          // Add scenario to analysis
-          pathAnalysis.championshipScenarios.push(scenario);
-        }
-      }
-    }
-  }
-  
-  return pathAnalysis;
 }
 
 /**

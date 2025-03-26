@@ -293,6 +293,7 @@ router.put("/games/:id", [auth, admin], async (req, res) => {
   const { winner, score, completed } = req.body;
   const matchupId = parseInt(req.params.id);
   const autoCalculateScores = req.query.calculateScores === "true";
+  const runTournamentAnalysis = req.query.runAnalysis !== "false"; // Default to true unless explicitly set to false
 
   // Fix for handling ID 0 - check if it's a number instead of truthy/falsy check
   if (isNaN(matchupId) || matchupId < 0) {
@@ -493,6 +494,38 @@ router.put("/games/:id", [auth, admin], async (req, res) => {
         }
       }
 
+      // Run tournament analysis if completed game and requested
+      if (completed && runTournamentAnalysis) {
+        try {
+          // Import the analysis function
+          const { analyzeTournamentPossibilities } = require('../tournament-possibilities-analyzer');
+          
+          // First check if we're at Sweet 16 or beyond
+          const activeTeams = getActiveTeams(tournament);
+          if (activeTeams.length <= 16) {
+            // Run analysis in the background without waiting for it to complete
+            // Save to DB since this is an admin action
+            analyzeTournamentPossibilities(true)
+              .then((result) => {
+                if (result.error) {
+                  console.log(`Tournament analysis skipped: ${result.message}`);
+                } else {
+                  console.log('Tournament analysis completed and saved to database after game update');
+                }
+              })
+              .catch(err => {
+                console.error('Error running tournament analysis after game update:', err);
+              });
+              
+            console.log('Tournament analysis started in background after game update');
+          } else {
+            console.log(`Tournament analysis skipped: ${activeTeams.length} active teams (need 16 or fewer)`);
+          }
+        } catch (analysisErr) {
+          console.error('Failed to start tournament analysis:', analysisErr);
+        }
+      }
+
       // Get a fresh copy of the tournament data to return
       const updatedTournament = await TournamentResults.findOne({
         year: new Date().getFullYear(),
@@ -502,199 +535,11 @@ router.put("/games/:id", [auth, admin], async (req, res) => {
         tournament: updatedTournament,
         scoresUpdated: true,
         bracketsUpdated: updatedBrackets,
+        analysisStarted: completed && runTournamentAnalysis
       });
     }
 
     res.json(tournament);
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send("Server error");
-  }
-});
-
-// @route   GET api/tournament/enhanced-standings
-// @desc    Get enhanced bracket standings with Final Four picks and possible scores
-// @access  Public
-router.get("/enhanced-standings", async (req, res) => {
-  try {
-    // Get tournament results first to calculate possible scores
-    const tournament = await TournamentResults.findOne({
-      year: new Date().getFullYear(),
-    });
-
-    if (!tournament) {
-      return res.status(400).json({
-        msg: "No tournament results available yet",
-      });
-    }
-
-    // Get all brackets with scores
-    const brackets = await Bracket.find().sort({
-      score: -1,
-      participantName: 1,
-    });
-
-    // Calculate possible score and extract Final Four picks for each bracket
-    const enhancedStandings = brackets.map((bracket, index) => {
-      // Extract champion and runner-up picks
-      let champion = null;
-      let runnerUp = null;
-      let finalFourTeams = [];
-
-      // Get championship matchup
-      if (bracket.picks && bracket.picks[6] && bracket.picks[6][0]) {
-        // Champion is the winner of the championship matchup
-        champion = bracket.picks[6][0].winner;
-
-        // Runner-up is the other team in the championship matchup
-        if (
-          bracket.picks[6][0].teamA &&
-          bracket.picks[6][0].teamB &&
-          champion
-        ) {
-          if (champion.name === bracket.picks[6][0].teamA.name) {
-            runnerUp = bracket.picks[6][0].teamB;
-          } else {
-            runnerUp = bracket.picks[6][0].teamA;
-          }
-        }
-      }
-
-      // Extract Final Four teams
-      if (bracket.picks && bracket.picks[5]) {
-        // Get winners from the Final Four matchups
-        finalFourTeams = bracket.picks[5]
-          .filter((matchup) => matchup.winner)
-          .map((matchup) => matchup.winner);
-
-        // Also include teams that made it to Final Four but didn't win
-        bracket.picks[5].forEach((matchup) => {
-          if (
-            matchup.teamA &&
-            !finalFourTeams.some((team) => team.name === matchup.teamA.name)
-          ) {
-            finalFourTeams.push(matchup.teamA);
-          }
-          if (
-            matchup.teamB &&
-            !finalFourTeams.some((team) => team.name === matchup.teamB.name)
-          ) {
-            finalFourTeams.push(matchup.teamB);
-          }
-        });
-      }
-
-      // Calculate maximum possible score
-      let recalculatedScore = 0;
-      let possibleScore = 0;
-      let futureRoundPoints = {};
-
-      // Calculate which teams are still alive for each participant
-      const teamsStillAlive = [];
-
-      // We need to recalculate from scratch for accuracy
-      if (tournament.scoringConfig && tournament.results) {
-        // Initialize future round points tracking
-        for (let round = 1; round <= 6; round++) {
-          futureRoundPoints[round] = 0;
-        }
-
-        // Loop through all rounds
-        for (let round = 1; round <= 6; round++) {
-          // Check each matchup in the round
-          if (bracket.picks[round]) {
-            bracket.picks[round].forEach((matchup) => {
-              // Skip if matchup doesn't have a winner picked
-              if (!matchup.winner) return;
-
-              // Find corresponding tournament matchup
-              const tournamentMatchup = tournament.results[round]?.find(
-                (m) => m.id === matchup.id
-              );
-
-              // CHECKING INDIVIDUAL GAMES instead of entire rounds
-              if (tournamentMatchup?.winner) {
-                // This individual game is complete - check if pick was correct
-                if (
-                  tournamentMatchup.winner.name === matchup.winner.name &&
-                  tournamentMatchup.winner.seed === matchup.winner.seed
-                ) {
-                  // Correct pick! Add points
-                  recalculatedScore += tournament.scoringConfig[round];
-                  possibleScore += tournament.scoringConfig[round];
-                }
-                // Wrong pick - no points possible from this game
-              } else {
-                // Game not yet played - check if player's team is still alive
-                if (
-                  tournament.teams &&
-                  !tournament.teams[matchup.winner.name]?.eliminated
-                ) {
-                  // Team still active, points still possible
-                  possibleScore += tournament.scoringConfig[round];
-
-                  // Track points by round for detailed breakdown
-                  futureRoundPoints[round] += tournament.scoringConfig[round];
-
-                  // Track this team as still alive for this participant
-                  if (!teamsStillAlive.includes(matchup.winner.name)) {
-                    teamsStillAlive.push(matchup.winner.name);
-                  }
-                }
-                // Team eliminated - no points possible
-              }
-            });
-          }
-        }
-
-        // Log the difference for debugging if scores don't match
-        if (recalculatedScore !== bracket.score) {
-          console.log(
-            `Score mismatch for ${bracket.participantName}: DB=${bracket.score}, Calculated=${recalculatedScore}`
-          );
-        }
-      }
-
-      return {
-        position: index + 1,
-        participantName: bracket.participantName,
-        entryNumber: bracket.entryNumber || 1,
-        score: bracket.score, // Keep using the database score for consistency
-        recalculatedScore: recalculatedScore, // Include the recalculated score for reference
-        userEmail: bracket.userEmail,
-        id: bracket._id,
-        possibleScore,
-        champion,
-        runnerUp,
-        finalFourTeams,
-        // Include additional useful data for UI
-        teamsStillAlive,
-        futureRoundPoints,
-      };
-    });
-
-    // Sort by score (just to be sure)
-    enhancedStandings.sort((a, b) => b.score - a.score);
-
-    // Recalculate positions after sorting
-    enhancedStandings.forEach((entry, index) => {
-      entry.position = index + 1;
-    });
-
-    // Get some stats
-    const stats = {
-      totalBrackets: brackets.length,
-      averageScore:
-        brackets.reduce((acc, bracket) => acc + bracket.score, 0) /
-        (brackets.length || 1), // Avoid division by zero
-      highestScore: brackets.length > 0 ? brackets[0].score : 0,
-      completedRounds: tournament ? tournament.completedRounds : [],
-    };
-
-    res.json({
-      standings: enhancedStandings,
-      stats,
-    });
   } catch (err) {
     console.error(err.message);
     res.status(500).send("Server error");

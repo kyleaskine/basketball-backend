@@ -2,19 +2,17 @@ const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
 const admin = require('../middleware/admin');
-const fs = require('fs').promises;
-const path = require('path');
 const mongoose = require('mongoose');
 
 // Import the analysis module
 const { analyzeTournamentPossibilities } = require('../tournament-possibilities-analyzer');
 
 // @route   GET api/tournament/possibilities
-// @desc    Get tournament possibility analysis
+// @desc    Get tournament possibility analysis (retrieves from database, never saves)
 // @access  Public
 router.get('/possibilities', async (req, res) => {
   try {
-    // First check the database for recent analysis
+    // Check the database for recent analysis
     const TournamentAnalysis = require('../models/TournamentAnalysis');
     
     // Get the most recent analysis
@@ -22,117 +20,67 @@ router.get('/possibilities', async (req, res) => {
       .sort({ timestamp: -1 })
       .limit(1);
     
-    // Check if analysis is recent enough (within last 30 minutes)
-    if (dbAnalysis && dbAnalysis.timestamp > new Date(Date.now() - (30 * 60 * 1000))) {
+    if (dbAnalysis) {
       console.log('Using database analysis from', dbAnalysis.timestamp);
       return res.json(dbAnalysis);
     }
     
-    // If no recent analysis in database, check cache files
-    const analysisDir = path.join(__dirname, '..', 'analysis-cache');
-    let analysisData = null;
+    // Get current tournament to check if we're at Sweet 16 or beyond
+    const TournamentResults = require('../models/TournamentResults');
+    
+    const tournament = await TournamentResults.findOne({
+      year: new Date().getFullYear(),
+    });
+    
+    if (!tournament) {
+      return res.status(404).json({ 
+        message: 'No tournament data found',
+        error: true 
+      });
+    }
+    
+    // If no analysis exists in database, generate fresh analysis BUT DON'T SAVE to DB
+    console.log('No analysis found in database. Generating fresh analysis (not saved)...');
+    
+    // Connect to database if not already connected
+    let needToCloseConnection = false;
+    if (mongoose.connection.readyState !== 1) {
+      await mongoose.connect(process.env.MONGO_URI);
+      needToCloseConnection = true;
+    }
     
     try {
-      // Create directory if it doesn't exist
-      await fs.mkdir(analysisDir, { recursive: true });
+      // Generate the analysis WITHOUT database saving
+      const analysisData = await analyzeTournamentPossibilities(false);
       
-      // Find the most recent analysis file
-      const files = await fs.readdir(analysisDir);
-      const analysisFiles = files.filter(f => f.startsWith('tournament-analysis-') && f.endsWith('.json'));
-      
-      if (analysisFiles.length > 0) {
-        // Sort by creation time (most recent first)
-        const fileTimes = await Promise.all(
-          analysisFiles.map(async file => {
-            const stats = await fs.stat(path.join(analysisDir, file));
-            return { file, time: stats.mtime.getTime() };
-          })
-        );
-        
-        fileTimes.sort((a, b) => b.time - a.time);
-        const mostRecentFile = fileTimes[0].file;
-        
-        // Check if analysis is recent enough (within last 30 minutes)
-        const fileTime = fileTimes[0].time;
-        const thirtyMinutesAgo = Date.now() - (30 * 60 * 1000);
-        
-        if (fileTime > thirtyMinutesAgo) {
-          // Use cached analysis
-          const fileContent = await fs.readFile(path.join(analysisDir, mostRecentFile), 'utf8');
-          analysisData = JSON.parse(fileContent);
-          console.log('Using cached analysis from', new Date(fileTime).toISOString());
-          
-          // Save to database to ensure it's available there too
-          if (!dbAnalysis || dbAnalysis.timestamp < new Date(fileTime)) {
-            // Create a new analysis document
-            const newAnalysis = new TournamentAnalysis({
-              timestamp: analysisData.timestamp || new Date(),
-              stage: analysisData.stage,
-              totalBrackets: analysisData.totalBrackets,
-              totalPossibleOutcomes: analysisData.totalPossibleOutcomes,
-              roundName: analysisData.roundName,
-              currentRound: analysisData.currentRound,
-              roundProgress: analysisData.roundProgress,
-              podiumContenders: analysisData.podiumContenders,
-              playersWithNoPodiumChance: analysisData.playersWithNoPodiumChance,
-              playersWithWinChance: analysisData.playersWithWinChance,
-              championshipPicks: analysisData.championshipPicks,
-              bracketOutcomes: analysisData.bracketOutcomes,
-              rareCorrectPicks: analysisData.rareCorrectPicks,
-              pathAnalysis: analysisData.pathAnalysis,
-              bracketResults: analysisData.bracketResults
-            });
-            
-            try {
-              await newAnalysis.save();
-              console.log('Cached analysis saved to database');
-            } catch (dbError) {
-              console.error('Error saving cached analysis to database:', dbError);
-              // Continue without failing - we still have the file data
-            }
-          }
-        }
-      }
-    } catch (cacheError) {
-      console.error('Error checking cache:', cacheError);
-      // Continue with fresh analysis if there's an error reading cache
-    }
-    
-    // If no cached analysis or it's too old, generate fresh analysis
-    if (!analysisData) {
-      console.log('Generating fresh tournament possibilities analysis');
-      
-      // Connect to database if not already connected
-      let needToCloseConnection = false;
-      if (mongoose.connection.readyState !== 1) {
-        await mongoose.connect(process.env.MONGO_URI);
-        needToCloseConnection = true;
+      // If analysis returned an error (e.g., too many teams)
+      if (analysisData.error) {
+        return res.status(400).json({
+          message: analysisData.message,
+          activeTeamCount: analysisData.activeTeamCount,
+          error: true
+        });
       }
       
-      try {
-        // Generate the analysis with database saving enabled
-        analysisData = await analyzeTournamentPossibilities(true);
-      } finally {
-        // Close connection if we opened it
-        if (needToCloseConnection) {
-          await mongoose.connection.close();
-        }
+      return res.json(analysisData);
+    } finally {
+      // Close connection if we opened it
+      if (needToCloseConnection) {
+        await mongoose.connection.close();
       }
     }
-    
-    return res.json(analysisData);
   } catch (err) {
-    console.error('Error generating tournament possibilities:', err);
+    console.error('Error retrieving tournament possibilities:', err);
     res.status(500).send('Server error');
   }
 });
 
 // @route   POST api/tournament/possibilities/generate
-// @desc    Force generation of fresh tournament possibilities analysis
+// @desc    Force generation of fresh tournament possibilities analysis and save to DB
 // @access  Private (admin only)
 router.post('/possibilities/generate', [auth, admin], async (req, res) => {
   try {
-    console.log('Admin triggered fresh tournament possibilities analysis');
+    console.log('Admin triggered fresh tournament possibilities analysis with database save');
     
     // Connect to database if not already connected
     let needToCloseConnection = false;
@@ -143,25 +91,34 @@ router.post('/possibilities/generate', [auth, admin], async (req, res) => {
     
     let analysisData;
     try {
-      // Generate the analysis with database saving enabled
+      // Generate the analysis WITH database saving enabled
       analysisData = await analyzeTournamentPossibilities(true);
+      
+      // If analysis returned an error (e.g., too many teams)
+      if (analysisData.error) {
+        return res.status(400).json({
+          success: false,
+          message: analysisData.message,
+          activeTeamCount: analysisData.activeTeamCount
+        });
+      }
+      
+      res.json({
+        success: true,
+        message: 'Tournament analysis generated and saved to database successfully',
+        timestamp: analysisData.timestamp,
+        stage: analysisData.stage,
+        roundName: analysisData.roundName,
+        totalBrackets: analysisData.totalBrackets,
+        totalPossibleOutcomes: analysisData.totalPossibleOutcomes,
+        roundProgress: analysisData.roundProgress
+      });
     } finally {
       // Close connection if we opened it
       if (needToCloseConnection) {
         await mongoose.connection.close();
       }
     }
-    
-    res.json({
-      success: true,
-      message: 'Tournament analysis generated successfully',
-      timestamp: analysisData.timestamp,
-      stage: analysisData.stage,
-      roundName: analysisData.roundName,
-      totalBrackets: analysisData.totalBrackets,
-      totalPossibleOutcomes: analysisData.totalPossibleOutcomes,
-      roundProgress: analysisData.roundProgress
-    });
   } catch (err) {
     console.error('Error generating tournament possibilities:', err);
     res.status(500).json({
