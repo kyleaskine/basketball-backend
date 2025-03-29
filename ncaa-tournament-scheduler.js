@@ -77,17 +77,17 @@ async function runUpdate() {
     console.log(`[${new Date().toISOString()}] Update completed with status: ${result.status}`);
     
     // Check if we should disable scheduler until tomorrow
-    // If there are no games or all games are complete, and it's not late night
-    if (!isLateNight && (result.status === 'no_updates' || result.status === 'complete_for_day')) {
-      const hasGames = result.totalGames && result.totalGames > 0;
-      
-      if (!hasGames) {
-        // No games today, auto-disable until tomorrow
-        await autoDisableUntilTomorrow('No tournament games scheduled for today');
-      } else if (result.allComplete) {
-        // All games complete, auto-disable until tomorrow
-        await autoDisableUntilTomorrow('All games for today are complete');
-      }
+    if (result.status === 'success' && result.totalGames > 0 && result.allComplete === true) {
+      await autoDisableUntilTomorrow('All games for today are complete');
+      console.log(`[${new Date().toISOString()}] Scheduler auto-disabled until tomorrow - all games complete`);
+    } 
+    else if (result.status === 'no_updates' && result.message === 'No tournament games found today') {
+      await autoDisableUntilTomorrow('No tournament games scheduled for today');
+      console.log(`[${new Date().toISOString()}] Scheduler auto-disabled until tomorrow - no games found`);
+    }
+    else if (result.status === 'complete_for_day') {
+      await autoDisableUntilTomorrow('Day already marked as complete');
+      console.log(`[${new Date().toISOString()}] Scheduler auto-disabled until tomorrow - day marked complete`);
     }
     
   } catch (error) {

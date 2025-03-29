@@ -169,17 +169,12 @@ function getActiveTeams(tournament) {
 function generateAllOutcomes(tournament) {
   // Get the current round
   const currentRound = determineCurrentRound(tournament);
-  console.log(`Current tournament round: ${currentRound}`);
 
   // Create bracket structure for all rounds
   const bracketStructure = getBracketStructure(tournament);
 
   // Get active teams in the tournament
   const activeTeams = getActiveTeams(tournament);
-  console.log(
-    "Active teams in tournament:",
-    activeTeams.map((team) => team.name)
-  );
 
   // Base outcome with no results
   const baseOutcome = {
@@ -200,7 +195,6 @@ function generateAllOutcomes(tournament) {
   // Then process each round sequentially
   for (let round = currentRound; round <= 6; round++) {
     outcomes = processRound(outcomes, round, bracketStructure, tournament);
-    console.log(`After round ${round}, we have ${outcomes.length} outcomes`);
 
     // Perform validation to ensure teams are being tracked correctly
     validateOutcomes(outcomes, round, activeTeams);
@@ -494,17 +488,6 @@ function validateOutcomes(outcomes, round, activeTeams) {
       }
     });
   }
-  const dukeWins = outcomes.filter((outcome) => {
-    const dukeMatchup = Object.values(outcome.matchupResults).find(
-      (result) =>
-        result.round === round && result.winner && result.winner.name === "Duke"
-    );
-    return !!dukeMatchup;
-  }).length;
-
-  console.log(
-    `Duke wins in ${dukeWins}/${outcomes.length} outcomes in Round ${round}`
-  );
 }
 
 /**

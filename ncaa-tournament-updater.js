@@ -182,6 +182,7 @@ async function updateTournamentResults(forceYesterday = false) {
       return {
         status: "no_updates",
         message: "No completed tournament games found",
+        totalGames: updateLog.trackedGames,
       };
     }
 
@@ -758,6 +759,59 @@ async function updateGameInDatabase(ncaaGame, matchupId, tournament) {
     tournament.markModified("teams");
     await tournament.save();
 
+    try {
+      // Import the tournament analysis functions
+      const {
+        analyzeTournamentPossibilities,
+        getActiveTeams,
+      } = require("./tournament-possibilities-analyzer");
+
+      // Check if we're at Sweet 16 or beyond (16 or fewer teams)
+      const activeTeams = getActiveTeams(tournament);
+
+      updateLog.addLog(
+        `Checking for tournament analysis: ${activeTeams.length} active teams remaining`
+      );
+
+      if (activeTeams.length <= 16) {
+        updateLog.addLog(
+          "Tournament has 16 or fewer teams - running analysis synchronously"
+        );
+        console.log("Running tournament analysis synchronously...");
+
+        try {
+          // Run analysis synchronously with database save enabled
+          const analysisResult = await analyzeTournamentPossibilities(true);
+
+          if (analysisResult.error) {
+            updateLog.addLog(
+              `Tournament analysis skipped: ${analysisResult.message}`
+            );
+            console.log(
+              `Tournament analysis skipped: ${analysisResult.message}`
+            );
+          } else {
+            updateLog.addLog(
+              "Tournament analysis completed and saved to database"
+            );
+            console.log("Tournament analysis completed successfully");
+          }
+        } catch (analysisError) {
+          updateLog.addLog(
+            `Error in tournament analysis: ${analysisError.message}`
+          );
+          console.error("Error in tournament analysis:", analysisError);
+        }
+      } else {
+        updateLog.addLog(
+          `Tournament analysis skipped: ${activeTeams.length} active teams (need 16 or fewer)`
+        );
+      }
+    } catch (err) {
+      updateLog.addLog(`Error preparing tournament analysis: ${err.message}`);
+      console.error("Error preparing tournament analysis:", err);
+    }
+
     console.log(
       `Successfully updated game ${matchupId}: ${currentGame.teamA.name} ${scoreA}-${scoreB} ${currentGame.teamB.name}. Winner: ${winner.name}`
     );
@@ -919,66 +973,66 @@ async function markYesterdayAsComplete() {
     yesterday.setDate(yesterday.getDate() - 1);
     const dayStart = new Date(yesterday.setHours(0, 0, 0, 0));
     const dayEnd = new Date(yesterday.setHours(23, 59, 59, 999));
-    
+
     // Find the most recent log with tracked games from yesterday
     const mostRecentLog = await NcaaUpdateLog.findOne({
       runDate: { $gte: dayStart, $lte: dayEnd },
-      totalTrackedGames: { $gt: 0 }
+      totalTrackedGames: { $gt: 0 },
     }).sort({ runDate: -1 });
-    
+
     if (!mostRecentLog) {
-      console.log('No logs found for yesterday to mark as complete');
-      
+      console.log("No logs found for yesterday to mark as complete");
+
       // Create a new completion log
       const newCompletionLog = new NcaaUpdateLog({
         runDate: dayEnd, // Set to end of yesterday
-        status: 'complete_for_day',
+        status: "complete_for_day",
         trackedGames: [],
         totalTrackedGames: 0,
         completedGames: 0,
         allGamesComplete: true,
-        logs: ['Manually marked as complete']
+        logs: ["Manually marked as complete"],
       });
-      
+
       await newCompletionLog.save();
       return {
-        status: 'created_completion_log',
-        message: 'Created new completion log for yesterday'
+        status: "created_completion_log",
+        message: "Created new completion log for yesterday",
       };
     }
-    
+
     // Mark the most recent log as complete
     mostRecentLog.allGamesComplete = true;
-    mostRecentLog.addLog('Manually marked as complete');
-    
+    mostRecentLog.addLog("Manually marked as complete");
+
     // Make sure all games are marked as completed
     if (mostRecentLog.trackedGames && mostRecentLog.trackedGames.length > 0) {
-      mostRecentLog.trackedGames.forEach(game => {
+      mostRecentLog.trackedGames.forEach((game) => {
         game.completed = true;
       });
-      
+
       mostRecentLog.completedGames = mostRecentLog.trackedGames.length;
     }
-    
+
     await mostRecentLog.save();
-    
+
     return {
-      status: 'updated_completion_log',
-      message: 'Updated existing log as complete',
-      log: mostRecentLog
+      status: "updated_completion_log",
+      message: "Updated existing log as complete",
+      log: mostRecentLog,
     };
   } catch (error) {
-    console.error('Error marking yesterday as complete:', error);
+    console.error("Error marking yesterday as complete:", error);
     throw error;
   }
 }
 
 // Export the functions for use in the scheduler
-module.exports = { 
+module.exports = {
   updateTournamentResults,
   checkRecentUpdateLog,
   areAllGamesCompleteForToday,
-  markYesterdayAsComplete
+  markYesterdayAsComplete,
 };
 
 // Execute directly if called as a script
