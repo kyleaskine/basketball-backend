@@ -273,7 +273,7 @@ function setupRoutes(app, auth, admin) {
 }
 
 /**
- * Auto-disable scheduler until tomorrow morning
+ * Auto-disable scheduler until the next morning
  */
 async function autoDisableUntilTomorrow(reason) {
   try {
@@ -284,20 +284,32 @@ async function autoDisableUntilTomorrow(reason) {
       settings = new SchedulerSettings({});
     }
     
-    // Calculate tomorrow at 8 AM
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(8, 0, 0, 0);
+    // Get current date and hour
+    const now = new Date();
+    const currentHour = now.getHours();
+    
+    // Calculate the next run time
+    const nextRunTime = new Date();
+    
+    // If it's between midnight and 6 AM, disable only until 8 AM of the current day
+    if (currentHour >= 0 && currentHour < 6) {
+      // Set to 8 AM today
+      nextRunTime.setHours(8, 0, 0, 0);
+    } else {
+      // Otherwise, disable until 8 AM tomorrow
+      nextRunTime.setDate(nextRunTime.getDate() + 1);
+      nextRunTime.setHours(8, 0, 0, 0);
+    }
     
     settings.enabled = false;
     settings.autoDisabled = true;
     settings.disabledReason = reason;
-    settings.nextRunTime = tomorrow;
+    settings.nextRunTime = nextRunTime;
     settings.lastUpdated = new Date();
     
     await settings.save();
     
-    console.log(`[${new Date().toISOString()}] Scheduler auto-disabled until ${tomorrow.toISOString()}. Reason: ${reason}`);
+    console.log(`[${new Date().toISOString()}] Scheduler auto-disabled until ${nextRunTime.toISOString()}. Reason: ${reason}`);
   } catch (error) {
     console.error('Error auto-disabling scheduler:', error);
   }
