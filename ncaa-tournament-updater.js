@@ -280,6 +280,64 @@ async function updateTournamentResults(forceYesterday = false) {
       updateLog.updatedCount = updatedCount;
       updateLog.status = "success";
 
+      // After scores are updated, run tournament analysis if appropriate
+      if (updatedCount > 0) {
+        try {
+          // Import the tournament analysis functions
+          const {
+            analyzeTournamentPossibilities,
+            getActiveTeams,
+          } = require("./tournament-possibilities-analyzer");
+
+          // Check if we're at Sweet 16 or beyond (16 or fewer teams)
+          const activeTeams = getActiveTeams(tournament);
+
+          updateLog.addLog(
+            `Checking for tournament analysis: ${activeTeams.length} active teams remaining`
+          );
+
+          if (activeTeams.length <= 16) {
+            updateLog.addLog(
+              "Tournament has 16 or fewer teams - running analysis synchronously"
+            );
+            console.log("Running tournament analysis synchronously...");
+
+            try {
+              // Run analysis synchronously with database save enabled
+              const analysisResult = await analyzeTournamentPossibilities(true);
+
+              if (analysisResult.error) {
+                updateLog.addLog(
+                  `Tournament analysis skipped: ${analysisResult.message}`
+                );
+                console.log(
+                  `Tournament analysis skipped: ${analysisResult.message}`
+                );
+              } else {
+                updateLog.addLog(
+                  "Tournament analysis completed and saved to database"
+                );
+                console.log("Tournament analysis completed successfully");
+              }
+            } catch (analysisError) {
+              updateLog.addLog(
+                `Error in tournament analysis: ${analysisError.message}`
+              );
+              console.error("Error in tournament analysis:", analysisError);
+            }
+          } else {
+            updateLog.addLog(
+              `Tournament analysis skipped: ${activeTeams.length} active teams (need 16 or fewer)`
+            );
+          }
+        } catch (err) {
+          updateLog.addLog(
+            `Error preparing tournament analysis: ${err.message}`
+          );
+          console.error("Error preparing tournament analysis:", err);
+        }
+      }
+
       updateLog.addLog(
         `Tournament update successful! Updated ${updatedCount} games.`
       );
@@ -758,59 +816,6 @@ async function updateGameInDatabase(ncaaGame, matchupId, tournament) {
     tournament.markModified("games");
     tournament.markModified("teams");
     await tournament.save();
-
-    try {
-      // Import the tournament analysis functions
-      const {
-        analyzeTournamentPossibilities,
-        getActiveTeams,
-      } = require("./tournament-possibilities-analyzer");
-
-      // Check if we're at Sweet 16 or beyond (16 or fewer teams)
-      const activeTeams = getActiveTeams(tournament);
-
-      updateLog.addLog(
-        `Checking for tournament analysis: ${activeTeams.length} active teams remaining`
-      );
-
-      if (activeTeams.length <= 16) {
-        updateLog.addLog(
-          "Tournament has 16 or fewer teams - running analysis synchronously"
-        );
-        console.log("Running tournament analysis synchronously...");
-
-        try {
-          // Run analysis synchronously with database save enabled
-          const analysisResult = await analyzeTournamentPossibilities(true);
-
-          if (analysisResult.error) {
-            updateLog.addLog(
-              `Tournament analysis skipped: ${analysisResult.message}`
-            );
-            console.log(
-              `Tournament analysis skipped: ${analysisResult.message}`
-            );
-          } else {
-            updateLog.addLog(
-              "Tournament analysis completed and saved to database"
-            );
-            console.log("Tournament analysis completed successfully");
-          }
-        } catch (analysisError) {
-          updateLog.addLog(
-            `Error in tournament analysis: ${analysisError.message}`
-          );
-          console.error("Error in tournament analysis:", analysisError);
-        }
-      } else {
-        updateLog.addLog(
-          `Tournament analysis skipped: ${activeTeams.length} active teams (need 16 or fewer)`
-        );
-      }
-    } catch (err) {
-      updateLog.addLog(`Error preparing tournament analysis: ${err.message}`);
-      console.error("Error preparing tournament analysis:", err);
-    }
 
     console.log(
       `Successfully updated game ${matchupId}: ${currentGame.teamA.name} ${scoreA}-${scoreB} ${currentGame.teamB.name}. Winner: ${winner.name}`
