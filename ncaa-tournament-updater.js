@@ -98,7 +98,7 @@ async function updateTournamentResults(forceYesterday = false) {
     });
 
     if (existingCompleteLog) {
-      updateLog.status = "complete_for_day";
+      updateLog.status = checkYesterday ? "complete_for_yesterday" : "complete_for_day";
       updateLog.addLog(
         `All games for ${
           checkYesterday ? "yesterday" : "today"
@@ -111,7 +111,7 @@ async function updateTournamentResults(forceYesterday = false) {
         } are already complete. Skipping update.`
       );
       return {
-        status: "complete_for_day",
+        status: checkYesterday ? "complete_for_yesterday" : "complete_for_day",
         message: `All games already complete for ${
           checkYesterday ? "yesterday" : "today"
         }`,
