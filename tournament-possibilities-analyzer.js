@@ -510,60 +510,6 @@ function getBracketStructure(tournament) {
 }
 
 /**
- * Verify that our outcome distribution is reasonable
- * @param {Array} outcomes - Generated possible outcomes
- * @param {Array} activeTeams - Currently active teams
- */
-function verifyOutcomeDistribution(outcomes, activeTeams) {
-  // Count outcomes by championship winner
-  const championshipWinners = {};
-  let totalOutcomesWithChampion = 0;
-
-  outcomes.forEach((outcome) => {
-    const champion = getChampionshipWinner(outcome);
-    if (champion) {
-      championshipWinners[champion] = (championshipWinners[champion] || 0) + 1;
-      totalOutcomesWithChampion++;
-    }
-  });
-
-  console.log("\nChampionship Winner Distribution:");
-  console.log("--------------------------------");
-
-  // Expected number of outcomes per team
-  const expectedPerTeam = totalOutcomesWithChampion / activeTeams.length;
-
-  // Print distribution
-  for (const teamName in championshipWinners) {
-    const count = championshipWinners[teamName];
-    const percentage = ((count / totalOutcomesWithChampion) * 100).toFixed(2);
-    const expected = (100 / activeTeams.length).toFixed(2);
-    const variance = (percentage - expected).toFixed(2);
-
-    console.log(
-      `${teamName}: ${count} outcomes (${percentage}%) - Variance from expected: ${variance}%`
-    );
-  }
-  console.log("--------------------------------");
-
-  // Check for any team with no championship outcomes
-  activeTeams.forEach((team) => {
-    if (!championshipWinners[team.name]) {
-      console.log(`WARNING: ${team.name} has 0 championship outcomes!`);
-    }
-  });
-
-  // Check if any unexpected teams won championships
-  for (const teamName in championshipWinners) {
-    if (!activeTeams.some((team) => team.name === teamName)) {
-      console.log(
-        `WARNING: ${teamName} won championships but is not in active teams list!`
-      );
-    }
-  }
-}
-
-/**
  * Get the championship winner from an outcome
  * @param {Object} outcome - A possible tournament outcome
  * @returns {String} Name of the championship winner, or null if not determined
@@ -711,7 +657,7 @@ function analyzeBracketScores(brackets, possibleOutcomes, tournament) {
 
     // Assign correct positions with proper tie handling
     assignPositionsWithTies(positions, results.bracketResults, outcomeId);
-  });
+  });  
 
   // Calculate averages and percentages
   const totalOutcomes = possibleOutcomes.length;
@@ -881,24 +827,20 @@ function projectTournamentWithOutcome(tournament, outcome) {
  * @returns {Number} Projected score
  */
 function calculateProjectedScore(bracket, projectedTournament) {
+  // Start with 0 and calculate the entire score from scratch
   let score = 0;
+  
   const scoringConfig = projectedTournament.scoringConfig || {
-    1: 1, // First round: 1 point
-    2: 2, // Second round: 2 points
-    3: 4, // Sweet 16: 4 points
-    4: 8, // Elite 8: 8 points
+    1: 1,  // First round: 1 point
+    2: 2,  // Second round: 2 points
+    3: 4,  // Sweet 16: 4 points
+    4: 8,  // Elite 8: 8 points
     5: 16, // Final Four: 16 points
     6: 32, // Championship: 32 points
   };
 
-  // Start from current completed rounds
-  const startRound =
-    (projectedTournament.completedRounds || []).length > 0
-      ? Math.max(...projectedTournament.completedRounds) + 1
-      : 1;
-
   // Calculate score for each round
-  for (let round = startRound; round <= 6; round++) {
+  for (let round = 1; round <= 6; round++) {
     // Skip if this round doesn't exist in either bracket or projected results
     if (!projectedTournament.results[round] || !bracket.picks[round]) continue;
 
@@ -924,8 +866,8 @@ function calculateProjectedScore(bracket, projectedTournament) {
     }
   }
 
-  // Add current score from completed rounds
-  return score + (bracket.score || 0);
+  // Return the total score without adding bracket.score
+  return score;
 }
 
 /**
@@ -936,7 +878,7 @@ function calculateProjectedScore(bracket, projectedTournament) {
  * @returns {Number} Projected score
  */
 function calculateProjectedScoreForOutcome(bracket, outcome, tournament) {
-  // Base score from already completed rounds
+  // Base score from already completed rounds - this already includes points for completed matchups
   let score = bracket.score || 0;
 
   // Get scoring config from tournament or use default scoring
@@ -949,16 +891,42 @@ function calculateProjectedScoreForOutcome(bracket, outcome, tournament) {
     6: 32, // Championship: 32 points
   };
 
-  // Add points for correct picks in this outcome
+  // Determine which rounds are already completed
+  const completedRounds = tournament.completedRounds || [];
+  
+  // Determine current round
+  let currentRound = 3; // Default to Sweet 16
+  if (completedRounds.includes(3)) currentRound = 4; // Elite 8
+  if (completedRounds.includes(4)) currentRound = 5; // Final Four
+  if (completedRounds.includes(5)) currentRound = 6; // Championship
+
+  // Track completed matchups by ID to avoid double counting
+  const completedMatchupIds = new Set();
+  
+  // Identify completed matchups in the current tournament state
+  for (let round = 1; round <= 6; round++) {
+    if (tournament.results && tournament.results[round]) {
+      tournament.results[round].forEach(matchup => {
+        if (matchup.winner) {
+          completedMatchupIds.add(matchup.id.toString());
+        }
+      });
+    }
+  }
+
+  // Add points only for matchups that haven't been completed yet
   if (bracket.picks) {
-    for (let round = 3; round <= 6; round++) {
+    for (let round = currentRound; round <= 6; round++) {
       if (!bracket.picks[round]) continue;
 
       // Check each matchup in the round
       bracket.picks[round].forEach((matchup) => {
         if (!matchup.winner) return;
+        
+        // Skip already completed matchups (their points are included in bracket.score)
+        if (completedMatchupIds.has(matchup.id.toString())) return;
 
-        // Find if this matchup has a result in the outcome
+        // Find if this matchup has a projected result in the outcome
         const matchupResult = outcome.matchupResults[matchup.id];
         if (matchupResult && matchupResult.winner) {
           // Check if bracket's pick matches outcome
@@ -978,7 +946,7 @@ function calculateProjectedScoreForOutcome(bracket, outcome, tournament) {
 }
 
 /**
- * Calculate a bracket's position in a specific outcome
+ * Calculate a bracket's position in a specific outcome using existing tie-handling functions
  * @param {String} bracketId - ID of the bracket
  * @param {Object} outcome - A tournament outcome
  * @param {Array} brackets - All brackets
@@ -1005,29 +973,35 @@ function calculateBracketPositionInOutcome(
   // Sort brackets by score (descending)
   const sortedIds = Object.keys(scores).sort((a, b) => scores[b] - scores[a]);
 
-  // Handle ties correctly
-  const positions = {};
-  let currentPosition = 1;
-  let currentScore = null;
-  let sameScoreCount = 0;
-
-  sortedIds.forEach((id) => {
-    const score = scores[id];
-
-    if (score !== currentScore) {
-      // New score level, update position
-      currentPosition += sameScoreCount;
-      sameScoreCount = 1;
-      currentScore = score;
-    } else {
-      // Same score, count for next position calculation
-      sameScoreCount++;
-    }
-
-    positions[id] = currentPosition;
+  // Step 1: Use determinePositions to group brackets by score
+  const positions = determinePositions(sortedIds, scores);
+  
+  // Step 2: Create a temporary results object to capture positions
+  const tempResults = {};
+  
+  // Initialize the temp results object
+  sortedIds.forEach(id => {
+    tempResults[id] = { position: 0 };
   });
-
-  return positions[bracketId] || brackets.length + 1; // Default to last place if not found
+  
+  // Step 3: Apply Olympic-style tie handling logic
+  let currentPosition = 1;
+  
+  for (let i = 0; i < positions.length; i++) {
+    const bracketIds = positions[i];
+    const tieSize = bracketIds.length;
+    
+    // Assign current position to all brackets in this group
+    bracketIds.forEach(id => {
+      tempResults[id].position = currentPosition;
+    });
+    
+    // Increment position by the number of tied brackets (Olympic style)
+    currentPosition += tieSize;
+  }
+  
+  // Return the position of our target bracket
+  return tempResults[bracketId]?.position || brackets.length + 1;
 }
 
 /**
@@ -1793,10 +1767,6 @@ async function analyzeTournamentPossibilities(shouldSaveToDb = false) {
 
     // Check if we're at Sweet 16 or beyond (16 or fewer teams remaining)
     const activeTeams = getActiveTeams(tournament);
-    console.log(`Tournament has ${activeTeams.length} active teams remaining:`);
-    activeTeams.forEach((team) => {
-      console.log(`- ${team.name} (Seed ${team.seed})`);
-    });
 
     if (activeTeams.length > 16) {
       console.log(
@@ -1816,18 +1786,6 @@ async function analyzeTournamentPossibilities(shouldSaveToDb = false) {
       `Current tournament stage: ${stageInfo.roundName} (${stageInfo.progress})`
     );
 
-    // Verify tournament scoring config
-    console.log("Tournament scoring config:");
-    const scoringConfig = tournament.scoringConfig || {
-      1: 1,
-      2: 2,
-      3: 4,
-      4: 8,
-      5: 16,
-      6: 32,
-    };
-    console.log(JSON.stringify(scoringConfig, null, 2));
-
     // Get all brackets
     const brackets = await Bracket.find({ isLocked: true });
     console.log(`Analyzing ${brackets.length} brackets`);
@@ -1841,9 +1799,6 @@ async function analyzeTournamentPossibilities(shouldSaveToDb = false) {
     // Generate all possible outcomes
     const possibleOutcomes = generateAllOutcomes(tournament);
     console.log(`Generated ${possibleOutcomes.length} outcomes for analysis`);
-
-    // Verify outcome distribution
-    verifyOutcomeDistribution(possibleOutcomes, activeTeams);
 
     // Calculate bracket scores under each outcome
     console.log("Analyzing bracket scores under all possible outcomes...");
