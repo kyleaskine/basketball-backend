@@ -558,41 +558,241 @@ router.put("/games/:id", [auth, admin], async (req, res) => {
   }
 });
 
+/**
+ * Calculate scores by round and region for a bracket
+ * @param {Object} bracket - Bracket data with picks
+ * @param {Object} tournamentResults - Current tournament results
+ * @returns {Object} Object containing roundScores and regionScores
+ */
+const calculateDetailedScores = (bracket, tournamentResults) => {
+  // Initialize score objects
+  const roundScores = {
+    "1": 0, // First Round
+    "2": 0, // Second Round
+    "3": 0, // Sweet 16
+    "4": 0, // Elite 8
+    "5": 0, // Final Four
+    "6": 0  // Championship
+  };
+  
+  const regionScores = {
+    "East": 0,
+    "West": 0,
+    "South": 0,
+    "Midwest": 0,
+    "FinalFour": 0 // For Final Four games
+  };
+
+  // If we don't have the necessary data, return empty scores
+  if (!bracket.picks || !tournamentResults || !tournamentResults.results || !tournamentResults.scoringConfig) {
+    console.log("Missing necessary data for score calculation");
+    return { roundScores, regionScores };
+  }
+  
+  try {
+    // Create a direct matchup to region mapping using tournament structure
+    const matchupRegions = {};
+    
+    // STEP 1: First extract regions directly from the games collection
+    // This is the most authoritative source if available
+    if (tournamentResults.games && tournamentResults.games.length > 0) {
+      tournamentResults.games.forEach(game => {
+        if (game.matchupId !== undefined) {
+          // Handle edge cases like matchupId 0
+          const matchupId = game.matchupId;
+          
+          // Handle special regions like "Championship"
+          if (game.region === "Championship") {
+            matchupRegions[matchupId] = "FinalFour";
+          } else if (game.region) {
+            matchupRegions[matchupId] = game.region;
+          }
+        }
+      });
+    }
+    
+    // STEP 2: For rounds 5-6, explicitly map to FinalFour
+    // Rounds 5-6 are always Final Four and Championship
+    for (const round of ["5", "6"]) {
+      if (tournamentResults.results[round]) {
+        tournamentResults.results[round].forEach(matchup => {
+          if (matchup.id !== undefined) {
+            matchupRegions[matchup.id] = "FinalFour";
+          }
+        });
+      }
+    }
+    
+    // STEP 3: Handle special case matchup IDs mentioned by the user
+    // These appear to be edge cases in the matchup ID system
+    for (const specialId of [0, 32, 48]) {
+      // Find these matchups in the tournament data
+      for (let round = 1; round <= 6; round++) {
+        if (tournamentResults.results[round]) {
+          const matchup = tournamentResults.results[round].find(m => m.id === specialId);
+          if (matchup) {
+            // If we found the matchup, determine its region
+            if (round >= 5) {
+              matchupRegions[specialId] = "FinalFour";
+            } else if (round <= 4) {
+              // For earlier rounds, try to determine region from the teams
+              // If a region is already set from games data, use that
+              if (!matchupRegions[specialId]) {
+                // As a fallback, look for region info in the matchup object itself
+                if (matchup.region) {
+                  matchupRegions[specialId] = matchup.region;
+                } else {
+                  console.log(`Special matchup ${specialId} found in round ${round}, but can't determine region`);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    // STEP 4: Cross-reference with team data
+    // Since teams belong to regions, we can use team data to infer regions for rounds 1-4
+    if (tournamentResults.teams) {
+      // For each matchup in rounds 1-4
+      for (let round = 1; round <= 4; round++) {
+        if (tournamentResults.results[round]) {
+          tournamentResults.results[round].forEach(matchup => {
+            // If we haven't determined this matchup's region yet
+            if (matchup.id !== undefined && !matchupRegions[matchup.id]) {
+              // Check if this matchup has region info directly
+              if (matchup.region) {
+                matchupRegions[matchup.id] = matchup.region;
+              }
+              // Otherwise try to infer from teams
+              else if (matchup.teamA && matchup.teamA.name && tournamentResults.teams[matchup.teamA.name]) {
+                // Some tournament structures store region with the team
+                const teamData = tournamentResults.teams[matchup.teamA.name];
+                if (teamData.region) {
+                  matchupRegions[matchup.id] = teamData.region;
+                }
+              }
+            }
+          });
+        }
+      }
+    }
+    
+    // Calculate scores by round
+    for (let round = 1; round <= 6; round++) {
+      // Skip if no picks for this round
+      if (!bracket.picks[round]) continue;
+      
+      // Check each matchup in the round
+      bracket.picks[round].forEach(matchup => {
+        // Skip if no winner picked
+        if (!matchup.winner) return;
+        
+        // Find corresponding tournament matchup
+        const tournamentMatchup = tournamentResults.results[round]?.find(
+          m => m.id === matchup.id
+        );
+        
+        // Skip if tournament matchup not found or doesn't have a winner
+        if (!tournamentMatchup || !tournamentMatchup.winner) return;
+        
+        // Check if the pick matches the result
+        if (
+          tournamentMatchup.winner.name === matchup.winner.name &&
+          tournamentMatchup.winner.seed === matchup.winner.seed
+        ) {
+          // Add points to the round total
+          const points = tournamentResults.scoringConfig[round] || 0;
+          roundScores[round] += points;
+          
+          // Determine region for this matchup
+          let region = "Unknown";
+          
+          // For rounds 5-6, always use FinalFour
+          if (round >= 5) {
+            region = "FinalFour";
+          } else {
+            // For rounds 1-4, use our mapping
+            region = matchupRegions[matchup.id] || "Unknown";
+            
+            // If still unknown, check if the matchup has region info directly
+            if (region === "Unknown" && tournamentMatchup.region) {
+              region = tournamentMatchup.region;
+            }
+            
+            // If still unknown, check if we can infer from the winner's region
+            if (region === "Unknown" && tournamentResults.teams && 
+                tournamentResults.teams[tournamentMatchup.winner.name]?.region) {
+              region = tournamentResults.teams[tournamentMatchup.winner.name].region;
+            }
+          }
+          
+          // Add points to the appropriate region
+          if (regionScores.hasOwnProperty(region)) {
+            regionScores[region] += points;
+          } else if (region === "Unknown") {
+            console.log(`Still unknown region for matchup ${matchup.id} in round ${round}`);
+            
+            // As a last resort fallback for rounds 1-4, distribute equally
+            if (round <= 4) {
+              for (const r of ["East", "West", "South", "Midwest"]) {
+                regionScores[r] += points / 4;
+              }
+            } else {
+              // Rounds 5-6 always go to FinalFour
+              regionScores["FinalFour"] += points;
+            }
+          }
+        }
+      });
+    }
+    
+    return { roundScores, regionScores };
+  } catch (error) {
+    console.error("Error calculating detailed scores:", error);
+    return { roundScores, regionScores };
+  }
+};
+
 // @route   GET api/tournament/enhanced-standings
-// @desc    Get enhanced bracket standings with Final Four picks and possible scores
+// @desc    Get enhanced bracket standings with detailed score breakdowns
 // @access  Public
 router.get("/enhanced-standings", async (req, res) => {
   try {
-    // Get tournament results first to calculate possible scores
+    // Get tournament results first to calculate scores
     const tournament = await TournamentResults.findOne({
       year: new Date().getFullYear(),
     });
+    
     if (!tournament) {
       return res.status(400).json({
         msg: "No tournament results available yet",
       });
     }
+    
     // Get all brackets with scores
     const brackets = await Bracket.find().sort({
       score: -1,
       participantName: 1,
     });
-    // Calculate possible score and extract Final Four picks for each bracket
-    const enhancedStandings = brackets.map((bracket, index) => {
-      // Extract champion and runner-up picks
+    
+    // Enhanced standings with round and region scores
+    const enhancedStandings = await Promise.all(brackets.map(async (bracket, index) => {
+      // Basic information from existing code
       let champion = null;
       let runnerUp = null;
       let finalFourTeams = [];
+      let recalculatedScore = 0;
+      let possibleScore = 0;
+      let futureRoundPoints = {};
+      const teamsStillAlive = [];
+
       // Get championship matchup
       if (bracket.picks && bracket.picks[6] && bracket.picks[6][0]) {
         // Champion is the winner of the championship matchup
         champion = bracket.picks[6][0].winner;
         // Runner-up is the other team in the championship matchup
-        if (
-          bracket.picks[6][0].teamA &&
-          bracket.picks[6][0].teamB &&
-          champion
-        ) {
+        if (bracket.picks[6][0].teamA && bracket.picks[6][0].teamB && champion) {
           if (champion.name === bracket.picks[6][0].teamA.name) {
             runnerUp = bracket.picks[6][0].teamB;
           } else {
@@ -600,7 +800,8 @@ router.get("/enhanced-standings", async (req, res) => {
           }
         }
       }
-      // Extract Final Four teams
+
+      // Extract Final Four teams (existing code...)
       if (bracket.picks && bracket.picks[5]) {
         // Get winners from the Final Four matchups
         finalFourTeams = bracket.picks[5]
@@ -608,32 +809,25 @@ router.get("/enhanced-standings", async (req, res) => {
           .map((matchup) => matchup.winner);
         // Also include teams that made it to Final Four but didn't win
         bracket.picks[5].forEach((matchup) => {
-          if (
-            matchup.teamA &&
-            !finalFourTeams.some((team) => team.name === matchup.teamA.name)
-          ) {
+          if (matchup.teamA && !finalFourTeams.some((team) => team.name === matchup.teamA.name)) {
             finalFourTeams.push(matchup.teamA);
           }
-          if (
-            matchup.teamB &&
-            !finalFourTeams.some((team) => team.name === matchup.teamB.name)
-          ) {
+          if (matchup.teamB && !finalFourTeams.some((team) => team.name === matchup.teamB.name)) {
             finalFourTeams.push(matchup.teamB);
           }
         });
       }
-      // Calculate maximum possible score
-      let recalculatedScore = 0;
-      let possibleScore = 0;
-      let futureRoundPoints = {};
-      // Calculate which teams are still alive for each participant
-      const teamsStillAlive = [];
-      // We need to recalculate from scratch for accuracy
+
+      // Initialize future round points tracking
+      for (let round = 1; round <= 6; round++) {
+        futureRoundPoints[round] = 0;
+      }
+
+      // Get detailed scores
+      const { roundScores, regionScores } = calculateDetailedScores(bracket, tournament);
+
+      // Calculate recalculated score and possible score (existing logic...)
       if (tournament.scoringConfig && tournament.results) {
-        // Initialize future round points tracking
-        for (let round = 1; round <= 6; round++) {
-          futureRoundPoints[round] = 0;
-        }
         // Loop through all rounds
         for (let round = 1; round <= 6; round++) {
           // Check each matchup in the round
@@ -641,10 +835,12 @@ router.get("/enhanced-standings", async (req, res) => {
             bracket.picks[round].forEach((matchup) => {
               // Skip if matchup doesn't have a winner picked
               if (!matchup.winner) return;
+              
               // Find corresponding tournament matchup
               const tournamentMatchup = tournament.results[round]?.find(
                 (m) => m.id === matchup.id
               );
+              
               // CHECKING INDIVIDUAL GAMES instead of entire rounds
               if (tournamentMatchup?.winner) {
                 // This individual game is complete - check if pick was correct
@@ -677,36 +873,36 @@ router.get("/enhanced-standings", async (req, res) => {
             });
           }
         }
-        // Log the difference for debugging if scores don't match
-        if (recalculatedScore !== bracket.score) {
-          console.log(
-            `Score mismatch for ${bracket.participantName}: DB=${bracket.score}, Calculated=${recalculatedScore}`
-          );
-        }
       }
+
       return {
         position: index + 1,
         participantName: bracket.participantName,
         entryNumber: bracket.entryNumber || 1,
-        score: bracket.score, // Keep using the database score for consistency
-        recalculatedScore: recalculatedScore, // Include the recalculated score for reference
+        score: bracket.score,
+        recalculatedScore,
         userEmail: bracket.userEmail,
         id: bracket._id,
         possibleScore,
         champion,
         runnerUp,
         finalFourTeams,
-        // Include additional useful data for UI
         teamsStillAlive,
         futureRoundPoints,
+        // Add the new score breakdowns
+        roundScores,
+        regionScores
       };
-    });
+    }));
+
     // Sort by score (just to be sure)
     enhancedStandings.sort((a, b) => b.score - a.score);
+    
     // Recalculate positions after sorting
     enhancedStandings.forEach((entry, index) => {
       entry.position = index + 1;
     });
+    
     // Get some stats
     const stats = {
       totalBrackets: brackets.length,
@@ -716,6 +912,7 @@ router.get("/enhanced-standings", async (req, res) => {
       highestScore: brackets.length > 0 ? brackets[0].score : 0,
       completedRounds: tournament ? tournament.completedRounds : [],
     };
+    
     res.json({
       standings: enhancedStandings,
       stats,
